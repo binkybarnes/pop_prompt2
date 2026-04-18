@@ -4,16 +4,7 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- **Pipeline step 04 (inventory rewind)** — rewind today's DC snapshot weekly, back to `min(DOCDATE)`, for SF/NJ/LA only. Plan:
-  - **Anchor date** = `max(sales.DOCDATE)` (snapshot has no date column).
-  - **Rewind formula** per (SKU, DC, week):
-    `inv[w] = today_on_hand − Σ PO receipts in (w, today] − Σ transfers_in in (w, today] + Σ transfers_out in (w, today] + Σ sales_signed in (w, today]`
-    (sales `QUANTITY_adj` is already sign-carrying, so returns handled naturally.)
-  - **Scope filter:** sales `LOCNCODE ∈ {1, 2, 3}` (physical DCs); drop `E1` (Shopify), `W` (Weee), `ZD` (returns). PO `Location Code` already in {1,2,3}.
-  - **New ingest:** `POP_InternalTransferHistory.XLSX` (Tier-2, 4,843 + 520 rows, **not currently in `01_load.ipynb`**). Load ad-hoc in 04 for now; promote to `load_all()` later if other steps need it. Biggest accuracy win — covers inter-DC moves that rewind would otherwise miss.
-  - **Skipped on purpose:** assembly/repack (`POP_AssemblyOrders.XLSX`, niche); chargeback-side returns (financial-only, not inventory events).
-  - **Confidence tag per (SKU, DC):** `min(on_hand_est)` across the series. Strongly negative = data gap → F1 treats this SKU as "low-confidence — manual review" (don't trust `is_stockout_week` here).
-  - **Output:** `inv_weekly.parquet` with `ITEMNMBR, DC, week_start, on_hand_est, confidence`.
+- (nothing actively in progress — step 04 just verified, next up is step 05)
 
 ## Next
 
@@ -29,6 +20,14 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- **Pipeline step 04 (inventory rewind)** — verified end-to-end. Anchor `2026-04-13`, rewind start `2023-01-02`, 173 weekly snapshots × 219 (SKU × DC) = 37,887 rows.
+  - Identity check PASS (`max |today_rewind − snapshot| = 0.000`).
+  - UOM fix: `sales.QTY_BASE = QUANTITY_adj × QTYBSUOM` row-level; `transfers.QTY_BASE = TRX QTY × pack` via per-(SKU, UOM) median QTYBSUOM learned from sales (fallback: per-SKU median, then 1.0). POs verified in base units (T-32206 lifetime PO/sales ratio 0.92).
+  - Confidence breakdown: **191 high / 28 low** (12.8% low-confidence, down from pre-UOM-fix where T-32206 alone was dipping to -3M base units).
+  - T-32206 spot check all-high: SF min=-17,450 / NJ min=+117,196 / LA min=+90,529 against today = 264k/365k/144k.
+  - Artifacts: `inv_weekly.parquet` (37,887 × 5), `inv_rewind_meta.parquet` (anchor/start/tolerance).
+  - **Known small gap:** 865 nulls in `on_hand_est` (2.3%) — not investigated yet, low priority.
+  - **Not yet promoted** to `src/inventory.py` — do after step 05 validates it.
 - `src/promo_cal.py` — promoted promo-calendar logic from `03_promo_calendar.ipynb`. Public API: `extract_promo_ym`, `fit_median_lag`, `impute_promo_ym`, `build_promo_calendar(tpr) -> (promo_cal, median_lag_days)`. Notebook re-executed end-to-end after the refactor; artifacts unchanged: `promo_cal.parquet` (1,391 × 3, 71 customers × 9 brands × 47 months), `promo_lag_meta.parquet` (median_lag_days = 128.0), regex coverage 98.1% → 100.0% with fallback.
 - `src/brand.py` — promoted brand tagging from `02_brand.ipynb`. Exposes `tag_brands(sales, tpr)` which returns `{'sales', 'tpr', 'sku_brand'}`, plus lower-level helpers (`derive_prefix_map_auto`, `make_extract_brand_v2`, `apply_sku_prefix_override`, `fill_brand_from_sku_majority`). Verified: sales 100.0%, tpr 87.6% (remaining 12.4% are admin-only TPR rows with no brand — MIS/LOA/LOC/RETAILER).
 - `pipeline/02_brand.ipynb` — verified coverage, 0 SKUs with conflicting brand labels, 84 unique brand-tagged SKUs, artifacts: `sales_with_brand.parquet` / `tpr_with_brand.parquet` / `sku_brand.parquet`.
