@@ -4,11 +4,11 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — promo-calendar TPR filter shipped, downstream artifacts regenerated, next up is step 09)
+- (nothing actively in progress — step 09 shipped, pipeline end-to-end is live)
 
 ## Next
 
-- **Pipeline step 09 (reorder alerts / F1)** — combine `organic_run_rate.parquet` + `elasticity.parquet` + current inventory + lead time → per-SKU × DC reorder alerts. Core math: `reorder_point = organic_run_rate × lead_time_weeks + safety_stock` where `safety_stock = (base_weeks + k·|elasticity_slope|) × organic_run_rate`. Output `reorder_alerts.xlsx` for buyers. Decide base_weeks and k at implementation time. Consider falling back to CV-based safety stock (`k·cv_weekly`) if elasticity slope isn't load-bearing given the off-invoice-TPR finding below.
+- **Pick next backend feature** to build in parallel with the UI layer being built in a separate Claude session on top of `reorder_alerts.csv`. Candidates: stockout lost-demand dollars, YoY per SKU × channel, channel-mix-shift alert, vendor lead-time variance from PO history.
 - **Open question for the president**: on-invoice vs off-invoice TPRs. Post-filter, `MBE591A` shows an 8% invoice discount during real TPR months but `MRE800A` and `MWA662A` show 0% — suggesting some customers invoice at list and take the TPR as a later rebate (chargeback settles the discount out-of-band). This means `Unit_Price_adj` is NOT a reliable signal for detecting promo windows for those customers, and elasticity fits at the customer-channel level may permanently underestimate promo-price response. Confirm with POP before investing in more elasticity work.
 - **Revisit elasticity model (after step 09)** — v1 is log-log only (constant-elasticity assumption). If showcase scatters show kinked demand curves (flat above some price, steep below), add isotonic regression as a per-SKU fallback. See feature_tree_v2 decision #5.
 - **Revisit feature scope (F1/F2) after pipeline** — stockout-caused demand loss is <0.2% of rows even at `LOST_DEMAND_COVER_K=10` (K=1 -> 55 rows, K=10 -> 440). That's a real finding: POP's demand is mostly promo/markdown-polluted (14.7%), not stockout-polluted. The F1 forecaster's main cleaning job is promos, not stockout imputation. Worth discussing whether that shifts F1/F2 framing after all steps are wired.
@@ -23,6 +23,13 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- **Pipeline step 09 (reorder alerts / F1)** — verified end-to-end. Per (SKU × DC) reorder table using classic `run_rate × lead + Z·σ·√lead` math (Z=1.65, 95% service), 4-week forward-cover order-up-to, case-pack rounding via `math.ceil`.
+  - `reorder_alerts.parquet` / `.csv` **233 × 25** (~57 SKUs × 3 DCs, after left-merge on inv snapshot). 165 flagged.
+  - Confidence: **109 high / 28 medium / 96 low**. Low mostly = SKUs in clean demand but missing from item_master (no lead time / case pack).
+  - Lead-time parsing: 51/65 item_master rows parsed. Rules: ranges → upper bound, bare numbers → months (ocean freight from China/Singapore), "Half a year or more" → 26 wk. 14 nulls fall back to `DEFAULT_LEAD_WEEKS=13`.
+  - T-32206 spot check: NJ (17.7k/wk, 18 wk cover → flag, suggest 272k u / 7,571 cases of 36); LA (5.0k/wk, 27 wk cover → flag, suggest 38k u / 1,056 cases); SF (5.1k/wk, 49 wk cover → no flag — the post-2023-dip over-correction we saw in step 04). Matches hand calc.
+  - **CV-based safety stock**, not elasticity-based, because the off-invoice TPR finding (below) means β under-estimates real promo responsiveness for MRE800A / MWA662A-type customers. Using weekly std directly avoids compounding that bias.
+  - `src/reorder.py` public API: `build_reorder_alerts(weekly, inv, im, **tunables) -> DataFrame`, plus `compute_dc_stats`, `prepare_item_master`, `parse_lead_time_weeks`, `parse_case_pack`. Notebook re-executed after promote; outputs byte-identical.
 - **Promo-calendar TPR filter (step 03 bugfix)** — `src/promo_cal.py` now calls `filter_true_tpr()` before building the calendar. The chargeback file mixes real CRED03 scan-downs with CRED02 publication / shelf-talker / trade-show / admin fees that don't change invoice price; previously every chargeback tagged a customer-brand-month as promo, so `is_promo` was firing on marketing-invoice months. New `classify_chargeback(desc, cause_code)` returns `tpr | fee | other` using PRICE_KW (scan / billback / TPR / `$N x M@` / % off / rebate / in-ad) and FEE_ONLY_KW (publication fee / shelf talker / catalog / trade show / front end kit / distributor charges / etc); CRED03 is kept unconditionally.
   - Filter impact: 6,868 chargebacks → **5,004 real TPRs** (73%). 1,309 dropped as fee, 555 as other (no price-cut signal).
   - `promo_cal.parquet`: **1,391 → 1,134 tuples** (71 customers → 63 — some customers had only fee-type chargebacks).
