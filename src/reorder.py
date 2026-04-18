@@ -89,29 +89,62 @@ def parse_case_pack(val) -> int:
     return int(m.group(1)) if m else 1
 
 
-def compute_dc_stats(weekly: pd.DataFrame) -> pd.DataFrame:
+def compute_dc_stats(
+    weekly: pd.DataFrame,
+    *,
+    run_rate_quantile: float | None = None,
+) -> pd.DataFrame:
     """Aggregate clean weekly demand to per (SKU × DC) run-rate + std.
 
     Sums across channels first, so the run rate is what each DC actually
     ships in a week — not a per-channel slice. Requires columns:
     ``ITEMNMBR``, ``DC``, ``week_start``, ``qty_base``.
+
+    ``run_rate_quantile`` (None by default) switches the "active" run
+    rate column used downstream:
+
+    - ``None`` → ``run_rate_wk = mean(weekly qty)`` (the default, matches
+      what step 09 shipped). Best when weekly demand is roughly symmetric.
+    - ``0.9`` / ``0.95`` → ``run_rate_wk = pN(weekly qty)``. Captures
+      lumpy / burst demand where a handful of big customer orders
+      dominate the peak weeks and the mean under-estimates real peak
+      drawdown. Raises the reorder point so alerts fire earlier.
+
+    Output always includes ``run_rate_wk_mean`` for reference and (when
+    ``run_rate_quantile`` is set) an additional ``run_rate_wk_pN`` column
+    so the caller can audit both. ``cv = std / mean`` uses the mean
+    denominator regardless — it's a statistical property of the series,
+    not a reorder input.
     """
     dc_weekly = (
         weekly.groupby(['ITEMNMBR', 'DC', 'week_start'], as_index=False)['qty_base']
               .sum()
     )
+    g = dc_weekly.groupby(['ITEMNMBR', 'DC'])
     out = (
-        dc_weekly.groupby(['ITEMNMBR', 'DC'])
-                 .agg(
-                     n_clean_weeks=('week_start', 'nunique'),
-                     run_rate_wk=('qty_base', 'mean'),
-                     std_wk=('qty_base', 'std'),
-                     first_week=('week_start', 'min'),
-                     last_week=('week_start', 'max'),
-                 )
-                 .reset_index()
+        g.agg(
+            n_clean_weeks=('week_start', 'nunique'),
+            run_rate_wk_mean=('qty_base', 'mean'),
+            std_wk=('qty_base', 'std'),
+            first_week=('week_start', 'min'),
+            last_week=('week_start', 'max'),
+        )
+        .reset_index()
     )
-    out['cv'] = out['std_wk'] / out['run_rate_wk']
+
+    if run_rate_quantile is not None:
+        pq_col = f'run_rate_wk_p{int(round(run_rate_quantile * 100))}'
+        pq = (
+            g['qty_base'].quantile(run_rate_quantile)
+                         .rename(pq_col)
+                         .reset_index()
+        )
+        out = out.merge(pq, on=['ITEMNMBR', 'DC'], how='left')
+        out['run_rate_wk'] = out[pq_col]
+    else:
+        out['run_rate_wk'] = out['run_rate_wk_mean']
+
+    out['cv'] = out['std_wk'] / out['run_rate_wk_mean']
     return out
 
 
@@ -154,6 +187,7 @@ def build_reorder_alerts(
     forward_cover_weeks: int = FORWARD_COVER_WEEKS,
     default_lead_weeks: float = DEFAULT_LEAD_WEEKS,
     min_weeks_for_high: int = MIN_WEEKS_FOR_HIGH,
+    run_rate_quantile: float | None = None,
 ) -> pd.DataFrame:
     """Return a (SKU × DC) reorder alert table sorted by urgency.
 
@@ -169,7 +203,7 @@ def build_reorder_alerts(
         im     : item_master with Item Number, Description, Case Pack,
                  Lead Time, Maufactuer/ CoPacker, Country of Origin, MOQ.
     """
-    dc_stats = compute_dc_stats(weekly)
+    dc_stats = compute_dc_stats(weekly, run_rate_quantile=run_rate_quantile)
 
     inv_p = inv.rename(columns={
         'Item Number': 'ITEMNMBR',

@@ -4,7 +4,7 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 09 shipped, pipeline end-to-end is live)
+- **Pipeline step 10 (F1 backtest)** — scaffolded at `pipeline/10_backtest.ipynb`. Walk-forward harness: for each `as_of_week` re-runs `build_reorder_alerts` on truncated history + synthetic snapshot from `inv_weekly`, then attaches forward-window ground truth (`forward_stockout`, `min_forward_on_hand`, `weeks_until_stockout`). Produces confusion matrix + lead-of-warning histogram + T-32206 SF timeline + per-lane summary. **Run preconditions**: this fresh pull is missing several artifacts (pipeline/artifacts/ is gitignored) — re-run notebooks 01→09 before 10 so `clean_demand_weekly.parquet`, `inv_weekly.parquet`, `item_master.parquet`, `reorder_alerts.parquet` exist. Test window: 2023-04-03 → 2025-10-13, 4-week step (~131 as-of weeks). After validation, promote helpers to `src/backtest.py` with `run_backtest(...)` entry point.
 
 ## Next
 
