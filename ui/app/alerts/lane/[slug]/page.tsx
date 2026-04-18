@@ -4,10 +4,13 @@ import {
   loadLane,
   loadLaneCounterfactual,
   loadLaneDemand,
+  loadLanesIndex,
   listLaneSlugs,
 } from '@/lib/data';
 import { LaneHeader } from '@/components/lane/LaneHeader';
-import { LaneChartPanel } from '@/components/lane/LaneChartPanel';
+import { LaneTabs } from '@/components/lane/LaneTabs';
+import { SidePanel } from '@/components/lane/SidePanel';
+import { DemandBreakdown } from '@/components/lane/DemandBreakdown';
 
 export async function generateStaticParams() {
   const slugs = await listLaneSlugs();
@@ -31,14 +34,27 @@ export default async function LanePage({
     notFound();
   }
 
+  let laneSummary;
+  try {
+    const lanesIdx = await loadLanesIndex();
+    laneSummary = lanesIdx.find((l) => l.sku === lane.sku && l.dc === lane.dc);
+  } catch {
+    laneSummary = undefined;
+  }
+
   return (
     <div className="space-y-4">
       <Link href="/alerts" className="text-sm text-muted hover:text-fg">
         ← Back to alerts
       </Link>
       <LaneHeader lane={lane} />
-      <LaneChartPanel lane={lane} counterfactual={cf} />
-      <pre className="text-xs text-muted">demand weeks: {demand.weekly.length}</pre>
+      <div className="flex gap-4">
+        <div className="flex-1 min-w-0">
+          <LaneTabs lane={lane} counterfactual={cf} />
+        </div>
+        <SidePanel lane={lane} laneSummary={laneSummary} />
+      </div>
+      <DemandBreakdown demand={demand} />
     </div>
   );
 }
