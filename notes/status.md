@@ -4,10 +4,16 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- **Pipeline step 03 (promo calendar)** — next up. Build `(cust × brand × ym)` calendar with lag imputation. Lag distribution analysis exists in `exploration_f1.ipynb` cell 15. Consume `tpr_with_brand.parquet` from step 02. Output: `promo_calendar.parquet`. Promote to `src/promo_cal.py`.
+- **Pipeline step 03 (promo calendar)** — notebook wired and verified; **ready to promote** to `src/promo_cal.py` once we resume. Results on real data:
+  - Regex hit 98.1% of TPR rows directly; lag imputation filled the last 1.9% → **100% promo_ym coverage**.
+  - Median lag = 128 days (IQR 89–194, right-skewed with long tail — typical retailer billing).
+  - `promo_cal.parquet` = **1,391 unique `(CUSTNMBR, brand, promo_ym)` tuples** across 71 customers × 9 brands × 47 months. 2x the prior-run count, because step 02's better brand extractor (87.6% TPR coverage vs v1's 25%) labeled many more rows.
+  - Decision: ship global median imputation as-is. Blast radius is only 131 rows, and more sophisticated per-customer / per-cause-code medians would still fall back to global for most customers. Note as assumption on demo slide.
+  - Side outputs also saved: `promo_lag_meta.parquet` (1 row, holds `median_lag_days = 128`).
 
 ## Next
 
+- **Promote step 03** — extract the logic from `pipeline/03_promo_calendar.ipynb` into `src/promo_cal.py`. Entry point: `build_promo_calendar(tpr_with_brand) -> (promo_cal, median_lag_days)`. Expose `extract_promo_ym`, `fit_median_lag`, `impute_promo_ym`, `build_promo_calendar`.
 - **Pipeline step 04 (inventory rewind)** — rewind today's DC snapshot via POs + shipments. Needs `Lead Time` parsed numeric (stored as string in `item_master.parquet`, see `data_notes.md`; use `pd.to_numeric(..., errors='coerce')`).
 - **Pipeline step 05 (tag transactions)** — apply `is_promo` / `is_markdown` / `is_stockout_week` flags using `promo_cal` + SKU median price rule.
 
