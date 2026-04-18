@@ -25,6 +25,21 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- **UI prototype (F1 reorder alerts)** — static Next.js 15 + React 19 + Tailwind + Recharts app at `ui/`.
+  Two-tab shell (Reorder Alerts + Demand Curves stub). List view at `/alerts` with
+  URL-state filter chips (DC / confidence / status), sortable table, per-row on_hand
+  sparklines, summary stats row. Lane view at `/alerts/lane/[slug]` (231 static routes)
+  with main chart (on_hand + reorder_point + alert triangles + stockout X markers),
+  counterfactual overlay toggle (Actual / +Mean / +P90) with simulated-PO dots + narrative
+  banner + delta readout card. Authored narratives on 3 showcase lanes: T-32206-SF,
+  T-32202-SF, A-61117-NJ (swapped from plan defaults after discovering the counterfactual
+  simulator doesn't include POP's baseline POs — these three actually show algorithm
+  wins). Tabs for Chart / Backtest (precision/recall + alert history) / Strategy
+  (mean vs p90 comparison). Fixed side panel with Why-firing + SKU metadata + lane stats.
+  Stacked-area demand breakdown by channel (MM/AM/HF) + top-5 customers per lane below.
+  Pipeline notebooks 09 + 10 dump JSON artifacts to `ui/data/` (committed). `npm run build`
+  produces `ui/out/` for static deploy.
+
 - **Pipeline step 09 (reorder alerts / F1)** — verified end-to-end. Per (SKU × DC) reorder table using classic `run_rate × lead + Z·σ·√lead` math (Z=1.65, 95% service), 4-week forward-cover order-up-to, case-pack rounding via `math.ceil`.
   - `reorder_alerts.parquet` / `.csv` **233 × 25** (~57 SKUs × 3 DCs, after left-merge on inv snapshot). 165 flagged.
   - Confidence: **109 high / 28 medium / 96 low**. Low mostly = SKUs in clean demand but missing from item_master (no lead time / case pack).
