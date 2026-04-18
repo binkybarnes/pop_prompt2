@@ -4,11 +4,11 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 04 just verified, next up is step 05)
+- (nothing actively in progress — step 05 just verified, next up is step 06)
 
 ## Next
 
-- **Pipeline step 05 (tag transactions)** — apply `is_promo` / `is_markdown` / `is_stockout_week` flags using `promo_cal` + SKU median price rule + `inv_weekly`. Import from `src.promo_cal`.
+- **Pipeline step 06 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Promote step 05 to `src/tagging.py` first.
 
 ## Blocked
 
@@ -20,6 +20,14 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- **Pipeline step 05 (tag transactions)** — verified end-to-end. All 236,818 sales rows preserved, 4 flags added (`is_promo`, `is_markdown`, `is_stockout_week`, `is_clean_demand`).
+  - `is_promo` = exact (CUSTNMBR, brand, sale_ym) match against `promo_cal`. **12.4%** of rows (29,421). Brand mix: tiger balm 22k / ginger chew 7.3k / am gsg 86. Sell-in-window refinement deferred.
+  - `is_markdown` = `Unit_Price_adj < 0.70 × SKU median` (median computed on non-promo positive-price rows to avoid self-anchoring low). **2.3%** (5,491). Median markdown depth 35% off.
+  - `is_stockout_week` = `on_hand_est ≤ 0` at sales week_start AND inv `confidence == 'high'`. **0.05%** (98 rows — all T-32206 SF, which dips to -17k within its 26k tolerance). Nullable boolean: NA for 30,563 rows without inv coverage (E1/W/ZD + SKUs not in snapshot).
+  - `is_clean_demand` = none of the three fire. **85.5%** (202,476 rows — the F1 forecaster's input).
+  - Markdown threshold (0.70) + rev-lookup on SKU median shown with histogram validation.
+  - Artifact: `sales_tagged.parquet` (236,818 × 35).
+  - **Not yet promoted** to `src/tagging.py` — do before step 06.
 - **Pipeline step 04 (inventory rewind)** — verified end-to-end. Anchor `2026-04-13`, rewind start `2023-01-02`, 173 weekly snapshots × 219 (SKU × DC) = 37,887 rows.
   - Identity check PASS (`max |today_rewind − snapshot| = 0.000`).
   - UOM fix: `sales.QTY_BASE = QUANTITY_adj × QTYBSUOM` row-level; `transfers.QTY_BASE = TRX QTY × pack` via per-(SKU, UOM) median QTYBSUOM learned from sales (fallback: per-SKU median, then 1.0). POs verified in base units (T-32206 lifetime PO/sales ratio 0.92).
