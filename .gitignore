@@ -1,5 +1,6 @@
 # Data files
 data/
+!ui/data/
 *.zip
 *.rar
 *.csv
@@ -14,6 +15,10 @@ pipeline/artifacts/
 .ipynb_checkpoints/
 __pycache__/
 *.pyc
+
+# Installers
+Miniforge3-*.sh
+*.sh.bak
 
 # Python env
 .venv/
@@ -30,3 +35,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# UI build output
+ui/node_modules/
+ui/.next/
+ui/out/

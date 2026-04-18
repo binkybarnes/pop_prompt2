@@ -5,6 +5,8 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 ## In progress
 
 - **Pipeline step 10 (F1 backtest)** — scaffolded at `pipeline/10_backtest.ipynb`. Walk-forward harness: for each `as_of_week` re-runs `build_reorder_alerts` on truncated history + synthetic snapshot from `inv_weekly`, then attaches forward-window ground truth (`forward_stockout`, `min_forward_on_hand`, `weeks_until_stockout`). Produces confusion matrix + lead-of-warning histogram + T-32206 SF timeline + per-lane summary. **Run preconditions**: this fresh pull is missing several artifacts (pipeline/artifacts/ is gitignored) — re-run notebooks 01→09 before 10 so `clean_demand_weekly.parquet`, `inv_weekly.parquet`, `item_master.parquet`, `reorder_alerts.parquet` exist. Test window: 2023-04-03 → 2025-10-13, 4-week step (~131 as-of weeks). After validation, promote helpers to `src/backtest.py` with `run_backtest(...)` entry point.
+- **POP Reorder UI plan — Task 4 DONE**: notebook 10 now also dumps `ui/data/lane/{SKU}-{DC}.json` (231 files, one per SKU×DC lane in `alerts_wf`). Each payload joins mean + p90 walk-forward time series with today's recommendation from step 09 (`reorder_alerts.parquet`) and metadata from `item_master.parquet` (vendor, country, case_pack). T-32206-SF has 34 series rows. Commit `f2affde`.
+- **POP Reorder UI plan — Tasks 11-14 DONE (Phase C list view)**: `/alerts` renders sortable `AlertTable`, `FilterChips` (DC/confidence/status, URL-driven), `SummaryStats` strip, and inline-SVG `Sparkline` per row. Filter state lives in `useSearchParams` inside a client `AlertsView` container because `output: 'export'` forbids server searchParams. Typecheck clean, dev server returns 200 for `/alerts/` and `/alerts/?dc=NJ`. Commit `6502d37`.
   - **Lead-time fallback chain** added to `src/reorder.py` (2026-04-18): `compute_lead_time_from_po` now returns `(per_dc, per_sku)`; precedence is `po_history` (≥3 PO receipts on this SKU×DC) → `po_pooled` (≥2 receipts across DCs for this SKU) → `parsed` → `default`. Motivation: backtest early iterations (2023-Q2) had 0 SF POs for T-32206, so lead fell back to parsed "Half a year or more" = 26 wk — 9× longer than actual ~3 wk. Fix moved 1,090 backtest lanes from parsed/default into `po_pooled`.
   - **Total-demand run rate** (2026-04-18): switched both `09_reorder_alerts.ipynb` and `10_backtest.ipynb` to feed `build_reorder_alerts` a `total_weekly` panel (raw sales grouped by SKU×DC×week) instead of `clean_demand_weekly`. Rationale: the warehouse drains at total outflow, so reorder math must size against total. Clean demand stays the input for forecasting / elasticity (separate concerns). Counterfactual sim impact on T-32206 SF: p90 variant now recall_fresh **100%** (was 83%), sim_p90 min on_hand **-20k** and final **+32k** (was -38k/-38k); mean variant recall **83%** (was 50%).
   - **Defaults bumped Z=1.65→2.33, forward_cover=4→6** (2026-04-18). Motivation: backtest trace showed dips happen during demand bursts (20k vs p90 of 15k) that outrun safety stock sized at 95%, and the 4-wk forward cover leaves too-short cycles. 99% service + 6-wk post-arrival cover prioritize "never run out" over "never hold extra" — POP already holds ~250k on T-32206 SF so the cash trade is ours to spend. T-32206 SF sim result: p90 min −20k→**−15k**, final +32k→**+30k**, orders 16→**12** (bigger & less frequent). Mean variant flipped ending from −34k → **+23k**, recall 83% → **100%**. Production alerts (step 09) now 202/233 flagged (was 199) — modest increase because reorder_point is higher.
@@ -33,6 +35,21 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 - (none open — the 10 open questions are all resolved in `feature_tree_v2.md`'s "Decisions locked" table)
 
 ## Recently completed
+
+- **UI prototype (F1 reorder alerts)** — static Next.js 15 + React 19 + Tailwind + Recharts app at `ui/`.
+  Two-tab shell (Reorder Alerts + Demand Curves stub). List view at `/alerts` with
+  URL-state filter chips (DC / confidence / status), sortable table, per-row on_hand
+  sparklines, summary stats row. Lane view at `/alerts/lane/[slug]` (231 static routes)
+  with main chart (on_hand + reorder_point + alert triangles + stockout X markers),
+  counterfactual overlay toggle (Actual / +Mean / +P90) with simulated-PO dots + narrative
+  banner + delta readout card. Authored narratives on 3 showcase lanes: T-32206-SF,
+  T-32202-SF, A-61117-NJ (swapped from plan defaults after discovering the counterfactual
+  simulator doesn't include POP's baseline POs — these three actually show algorithm
+  wins). Tabs for Chart / Backtest (precision/recall + alert history) / Strategy
+  (mean vs p90 comparison). Fixed side panel with Why-firing + SKU metadata + lane stats.
+  Stacked-area demand breakdown by channel (MM/AM/HF) + top-5 customers per lane below.
+  Pipeline notebooks 09 + 10 dump JSON artifacts to `ui/data/` (committed). `npm run build`
+  produces `ui/out/` for static deploy.
 
 - **Pipeline step 09 (reorder alerts / F1)** — verified end-to-end. Per (SKU × DC) reorder table using classic `run_rate × lead + Z·σ·√lead` math (Z=1.65, 95% service), 4-week forward-cover order-up-to, case-pack rounding via `math.ceil`.
   - `reorder_alerts.parquet` / `.csv` **233 × 25** (~57 SKUs × 3 DCs, after left-merge on inv snapshot). 165 flagged.
