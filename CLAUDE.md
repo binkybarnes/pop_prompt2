@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Before starting any task, read notes/README.md for the index to all project docs.
 
+## Commit policy
+
+After verifying a pipeline step end-to-end (notebook runs clean + artifacts match expected shape) or promoting notebook logic into `src/`, auto-commit using the existing `checkpoint: …` / `feat: …` style and update `notes/status.md` in the same commit. Don't commit on read-only turns, exploratory changes, or anything not yet verified. User can say "don't commit" to override for a specific turn.
+
 ## Project context
 
 Hack the Coast 2026 submission for **Prince of Peace Enterprises (POP)** Problem 1 (Demand & Order Intelligence) + Problem 3 (Inventory & Fulfillment). POP is a CPG importer/distributor (Tiger Balm, POP Ginger Chews, Ferrero, etc.) with 3 DCs (SF / NJ / LA), ~800 SKUs, and two very different sales channels (American mass/supermarket vs Asian herbal/specialty). No API, no WMS, no cloud warehouse — everything is CSV/Excel exports out of Microsoft Dynamics GP + Cavallo SalesPad.

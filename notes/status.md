@@ -4,18 +4,12 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- **Pipeline step 03 (promo calendar)** — notebook wired and verified; **ready to promote** to `src/promo_cal.py` once we resume. Results on real data:
-  - Regex hit 98.1% of TPR rows directly; lag imputation filled the last 1.9% → **100% promo_ym coverage**.
-  - Median lag = 128 days (IQR 89–194, right-skewed with long tail — typical retailer billing).
-  - `promo_cal.parquet` = **1,391 unique `(CUSTNMBR, brand, promo_ym)` tuples** across 71 customers × 9 brands × 47 months. 2x the prior-run count, because step 02's better brand extractor (87.6% TPR coverage vs v1's 25%) labeled many more rows.
-  - Decision: ship global median imputation as-is. Blast radius is only 131 rows, and more sophisticated per-customer / per-cause-code medians would still fall back to global for most customers. Note as assumption on demo slide.
-  - Side outputs also saved: `promo_lag_meta.parquet` (1 row, holds `median_lag_days = 128`).
+- (nothing active — ready to start step 04)
 
 ## Next
 
-- **Promote step 03** — extract the logic from `pipeline/03_promo_calendar.ipynb` into `src/promo_cal.py`. Entry point: `build_promo_calendar(tpr_with_brand) -> (promo_cal, median_lag_days)`. Expose `extract_promo_ym`, `fit_median_lag`, `impute_promo_ym`, `build_promo_calendar`.
 - **Pipeline step 04 (inventory rewind)** — rewind today's DC snapshot via POs + shipments. Needs `Lead Time` parsed numeric (stored as string in `item_master.parquet`, see `data_notes.md`; use `pd.to_numeric(..., errors='coerce')`).
-- **Pipeline step 05 (tag transactions)** — apply `is_promo` / `is_markdown` / `is_stockout_week` flags using `promo_cal` + SKU median price rule.
+- **Pipeline step 05 (tag transactions)** — apply `is_promo` / `is_markdown` / `is_stockout_week` flags using `promo_cal` + SKU median price rule. Import from `src.promo_cal`.
 
 ## Blocked
 
@@ -27,6 +21,7 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- `src/promo_cal.py` — promoted promo-calendar logic from `03_promo_calendar.ipynb`. Public API: `extract_promo_ym`, `fit_median_lag`, `impute_promo_ym`, `build_promo_calendar(tpr) -> (promo_cal, median_lag_days)`. Notebook re-executed end-to-end after the refactor; artifacts unchanged: `promo_cal.parquet` (1,391 × 3, 71 customers × 9 brands × 47 months), `promo_lag_meta.parquet` (median_lag_days = 128.0), regex coverage 98.1% → 100.0% with fallback.
 - `src/brand.py` — promoted brand tagging from `02_brand.ipynb`. Exposes `tag_brands(sales, tpr)` which returns `{'sales', 'tpr', 'sku_brand'}`, plus lower-level helpers (`derive_prefix_map_auto`, `make_extract_brand_v2`, `apply_sku_prefix_override`, `fill_brand_from_sku_majority`). Verified: sales 100.0%, tpr 87.6% (remaining 12.4% are admin-only TPR rows with no brand — MIS/LOA/LOC/RETAILER).
 - `pipeline/02_brand.ipynb` — verified coverage, 0 SKUs with conflicting brand labels, 84 unique brand-tagged SKUs, artifacts: `sales_with_brand.parquet` / `tpr_with_brand.parquet` / `sku_brand.parquet`.
 - `src/load.py` — promoted `load_all()` / `write_cache()` / `load_cached()` from `01_load.ipynb`. Downstream notebooks should `from src.load import load_cached` instead of re-reading raw files.
