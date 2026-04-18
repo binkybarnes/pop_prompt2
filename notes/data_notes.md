@@ -55,6 +55,15 @@ The `SALESCHANNEL` column is the code; `SALESCHANNEL_DESC` is the full name.
 
 > Don't trust the `Customer Type` field in sales — 181 unique free-text values, human-entered. Use Salesperson ID instead (confirmed by POP's president in conversation with the team).
 
+## Brand tagging (step 02 output)
+
+Every SKU in sales (100% coverage, 83 unique SKUs → 82 brand-labeled + 1 null-description edge case resolved by SKU-majority fallback) and 87.6% of TPR rows get a `brand` label via `src.brand.tag_brands()`. Breakdown of brand labels used:
+
+- **Seed brands** (substring match): `tiger balm`, `ginger chew`, `ferrero`, `ricola`, `kwan loong`, `ginseng`, `kjeldsens`, `nutella`, `totole`, `bee & flower`, `am gsg`, `pop ginger`
+- **Added in v2**: `ginger honey crystals`, `cofixrx`, `azzurx`, `hans honey`, `mx eggrolls`, `pop tea`
+- **The remaining 12.4% of TPR rows** are admin codes with no brand (`MIS` — Food Show vouchers, `LOA` — End Cap inv, `LOC` — promotional inv, `RETAILER` — generic scan-down). These stay null by design.
+- **`D-*` SKUs** (POP teas — POP OG Green Tea, POP Jasmine Tea, etc.) are caught by `SKU_PREFIX_MAP` in `src.brand`, not by description matching (their ITEMDESCs start with "POP", not "D").
+
 ## TPR / promo signal
 
 **6,868 TPR chargeback rows (36.5% of all chargebacks).** Cause-code breakdown of the TPR subset:

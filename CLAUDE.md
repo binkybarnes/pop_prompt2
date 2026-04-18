@@ -42,14 +42,14 @@ POP's own framing, which we follow. **Each layer only reads the previous layer's
 
 ## Working conventions
 
+- **Environment**: the user runs this project in a **mamba env named `3.11mamba`** (Python 3.11). The Jupyter kernel is this env. Any CLI invocation (pytest, pip install, running a `src/` module directly) must be prefixed with `mamba run -n 3.11mamba …` — a bare `python3` on this machine resolves to a different miniforge env (Python 3.10, missing deps). If you want to install a package, use `mamba run -n 3.11mamba pip install <pkg>`.
 - **Edit notebooks with `NotebookEdit`**, not by pasting code for the user to copy manually.
-- When adding notebook cells, assume the kernel has already run earlier cells — reuse variables like `sales`, `cb`, `tpr`, `promo_cal`, `desc_map`, `extract_brand`, `tag_sales` rather than reloading.
+- **Consume upstream pipeline artifacts via `from src.load import load_cached`** rather than re-reading raw files. `load_cached()` returns the 8-dict of dataframes. Only `pipeline/01_load.ipynb` should touch `data/` directly. Each pipeline notebook self-loads what it needs at the top — don't rely on shared kernel state across notebooks.
 - Treat `notes/` files as durable project memory — update them when scope/decisions change; don't silently delete prior ideas without showing the mapping.
 - Data files are gitignored; never commit anything from `data/`.
-- The user works from WSL2 Linux; `pandas` reads `.xlsx` natively (no conversion step needed).
 
 ## Common tasks
 
-- **Start the notebook**: `jupyter lab` (or run via the VS Code / Antigravity Jupyter extension).
-- **Reload data after schema changes**: rerun Cells 1–2 of `exploration_f1.ipynb`; everything downstream depends on `sales`, `cb`, and the six other core dataframes defined there.
+- **Start the notebook**: `jupyter lab` (or run via the VS Code / Antigravity Jupyter extension). Kernel must be the `3.11mamba` env.
+- **Reload data after raw-file schema changes**: re-run `pipeline/01_load.ipynb` end-to-end (rewrites the parquets under `pipeline/artifacts/`). All other notebooks then pick up the change via `load_cached()` — no manual rewire needed.
 - **Pick showcase SKUs**: criteria are `lines ≥ 1000`, `channels ≥ 2`, brand recognizable, ideally has TPR activity. Current candidates: `T-32206` (Tiger Balm Patch Warm), `F-04111` (POP Ginger Chews Original), `T-22010`, `T-31510`.
