@@ -4,11 +4,12 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 05 just verified, next up is step 06)
+- (nothing actively in progress — step 05 lost-demand flag verified, next up is step 06)
 
 ## Next
 
 - **Pipeline step 06 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Promote step 05 to `src/tagging.py` first.
+- **Potentially tweak lost-demand thresholds** — current detector is very conservative (55 rows). Could loosen `LOST_DEMAND_COVER_K` from 1.0 → 2.0 (flag weeks with <2 weeks of cover instead of <1) if we want more recall. Current precision looks strong (LD.3 DC substitution 61%, LD.5 spot-check clean).
 
 ## Blocked
 
@@ -20,13 +21,20 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
-- **Pipeline step 05 (tag transactions)** — verified end-to-end. All 236,818 sales rows preserved, 4 flags added (`is_promo`, `is_markdown`, `is_stockout_week`, `is_clean_demand`).
+- **Pipeline step 05 (tag transactions)** — verified end-to-end. All 236,818 sales rows preserved, 5 flags added (`is_promo`, `is_markdown`, `is_stockout_week`, `is_lost_demand_week`, `is_clean_demand`).
   - `is_promo` = exact (CUSTNMBR, brand, sale_ym) match against `promo_cal`. **12.4%** of rows (29,421). Brand mix: tiger balm 22k / ginger chew 7.3k / am gsg 86. Sell-in-window refinement deferred.
   - `is_markdown` = `Unit_Price_adj < 0.70 × SKU median` (median computed on non-promo positive-price rows to avoid self-anchoring low). **2.3%** (5,491). Median markdown depth 35% off.
-  - `is_stockout_week` = `on_hand_est ≤ 0` at sales week_start AND inv `confidence == 'high'`. **0.05%** (98 rows — all T-32206 SF, which dips to -17k within its 26k tolerance). Nullable boolean: NA for 30,563 rows without inv coverage (E1/W/ZD + SKUs not in snapshot).
-  - `is_clean_demand` = none of the three fire. **85.5%** (202,476 rows — the F1 forecaster's input).
+  - `is_stockout_week` = `on_hand_est ≤ 0` at sales week_start AND inv `confidence == 'high'`. **0.04%** (98 rows — all T-32206 SF, which dips to -17k within its 26k tolerance). Nullable boolean: NA for 30,563 rows without inv coverage.
+  - `is_lost_demand_week` = `low_stock_week` AND `cust_below_normal`, where `low_stock_week = week_on_hand < 1.0 × typical_weekly_base` (and `confidence='high'`) and `cust_below_normal = QTY_BASE < 0.70 × cust_median` (per-customer-SKU median from ≥3 orders). **0.02%** (55 rows). NA = 38,817 rows (no inv or no customer baseline).
+    - LD.1 magnitude: 52 / 55 are T-32206 in SF (the known-dip SKU); rest are 2 ferrero + 1 am gsg.
+    - LD.2 timing: flagged rows cluster tightly in 4 consecutive weeks (2023-05-29 → 2023-06-19) when SF on_hand went -1.5k → -17.5k. No flags fire when on_hand is positive.
+    - LD.3 DC substitution: **61%** of flagged (cust, sku, week) events had another DC ship the SAME customer's SKU above-median the same week → strong evidence POP rerouted from NJ/LA when SF was out.
+    - LD.4 backfill: flagged rows show 17% next-order-above-normal vs 29% baseline for `cust_below_normal` without an inv dip. Lower backfill rate is explained by the 61% same-week DC substitution — customer already got product, no catch-up needed.
+    - LD.5 spot check (T-32206 SF deepest dip week 2023-06-19 ±4w): flagged=16,12,11,13 on weeks with negative on_hand; flagged=0 on weeks before/after when on_hand is positive despite 6–22 cust-below-normal rows. Detector correctly gates on inventory.
+  - `is_clean_demand` = none of `is_promo / is_markdown / is_stockout_week / is_lost_demand_week` fire. **85.5%** (202,473 rows — the F1 forecaster's input).
   - Markdown threshold (0.70) + rev-lookup on SKU median shown with histogram validation.
-  - Artifact: `sales_tagged.parquet` (236,818 × 35).
+  - Artifact: `sales_tagged.parquet` (236,818 × 41) — adds `QTY_BASE`, `typical_weekly_base`, `low_stock_week`, `cust_median_qty`, `cust_below_normal`, `is_lost_demand_week`.
+  - **Known tradeoff:** detector is very conservative (low recall, high precision). Only finds the biggest outages. Loosening `LOST_DEMAND_COVER_K` (1.0 → 2.0) would catch weeks with <2w cover; evaluate if F1 forecast needs more signal.
   - **Not yet promoted** to `src/tagging.py` — do before step 06.
 - **Pipeline step 04 (inventory rewind)** — verified end-to-end. Anchor `2026-04-13`, rewind start `2023-01-02`, 173 weekly snapshots × 219 (SKU × DC) = 37,887 rows.
   - Identity check PASS (`max |today_rewind − snapshot| = 0.000`).
