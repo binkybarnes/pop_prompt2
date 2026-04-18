@@ -4,12 +4,20 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing active — ready to start step 04)
+- **Pipeline step 04 (inventory rewind)** — rewind today's DC snapshot weekly, back to `min(DOCDATE)`, for SF/NJ/LA only. Plan:
+  - **Anchor date** = `max(sales.DOCDATE)` (snapshot has no date column).
+  - **Rewind formula** per (SKU, DC, week):
+    `inv[w] = today_on_hand − Σ PO receipts in (w, today] − Σ transfers_in in (w, today] + Σ transfers_out in (w, today] + Σ sales_signed in (w, today]`
+    (sales `QUANTITY_adj` is already sign-carrying, so returns handled naturally.)
+  - **Scope filter:** sales `LOCNCODE ∈ {1, 2, 3}` (physical DCs); drop `E1` (Shopify), `W` (Weee), `ZD` (returns). PO `Location Code` already in {1,2,3}.
+  - **New ingest:** `POP_InternalTransferHistory.XLSX` (Tier-2, 4,843 + 520 rows, **not currently in `01_load.ipynb`**). Load ad-hoc in 04 for now; promote to `load_all()` later if other steps need it. Biggest accuracy win — covers inter-DC moves that rewind would otherwise miss.
+  - **Skipped on purpose:** assembly/repack (`POP_AssemblyOrders.XLSX`, niche); chargeback-side returns (financial-only, not inventory events).
+  - **Confidence tag per (SKU, DC):** `min(on_hand_est)` across the series. Strongly negative = data gap → F1 treats this SKU as "low-confidence — manual review" (don't trust `is_stockout_week` here).
+  - **Output:** `inv_weekly.parquet` with `ITEMNMBR, DC, week_start, on_hand_est, confidence`.
 
 ## Next
 
-- **Pipeline step 04 (inventory rewind)** — rewind today's DC snapshot via POs + shipments. Needs `Lead Time` parsed numeric (stored as string in `item_master.parquet`, see `data_notes.md`; use `pd.to_numeric(..., errors='coerce')`).
-- **Pipeline step 05 (tag transactions)** — apply `is_promo` / `is_markdown` / `is_stockout_week` flags using `promo_cal` + SKU median price rule. Import from `src.promo_cal`.
+- **Pipeline step 05 (tag transactions)** — apply `is_promo` / `is_markdown` / `is_stockout_week` flags using `promo_cal` + SKU median price rule + `inv_weekly`. Import from `src.promo_cal`.
 
 ## Blocked
 
