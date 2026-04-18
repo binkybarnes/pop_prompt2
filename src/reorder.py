@@ -4,10 +4,28 @@ Drives F1. Given weekly clean demand, an inventory snapshot, and item-master
 metadata, produce one row per (SKU × DC) with:
 
     reorder_point  = run_rate_wk × lead_time_wk + safety_stock
-    safety_stock   = Z × std_wk × sqrt(lead_time_wk)            (95% service)
+    safety_stock   = Z × sqrt(LT·std_wk² + run_rate² · std_LT²)
+                     ↑ ABC/XYZ-tiered Z, LT-variance-aware
+                     (falls back to Z·std_wk·sqrt(LT) when σ_LT unknown)
     suggested_qty  = max(0, reorder_point + forward_cover × run_rate − avail)
                      rounded up to case pack
     reorder_flag   = available_now < reorder_point
+
+Safety stock formula (from inventory-demand-planning skill):
+  When vendor lead times vary, the textbook Z·σ_d·√LT under-books. Using
+  ``SS = Z · √(LT·σ_d² + d·² · σ_LT²)`` captures both demand and lead-time
+  variability. For POP, T-32206 SF has 20+ POs with lead spanning 3–9 wk
+  (CV_LT ≈ 0.3), so the LT-variance term adds ~20–40% of safety stock
+  where the single-source formula misses.
+
+ABC/XYZ policy (from skill's Section "Safety Stock Service Level Selection"):
+  Flat Z=2.33 for all 233 lanes over-invests in C-items. We tier:
+    AX/AY → Z=1.96 / 1.65  (97.5% / 95% service)
+    AZ     → Z=1.65        (erratic A-items get moderated)
+    BX/BY/BZ → Z=1.65 / 1.65 / 1.28
+    CX/CY/CZ → Z=1.28 / 1.28 / 1.04
+  ABC is revenue-weighted SKU-level (A=top 20% revenue, B=next 30%).
+  XYZ is lane-level (X: CV<0.5, Y: 0.5-1.0, Z: CV>1.0).
 
 Why CV-based safety stock and not elasticity-based:
   The original feature_tree_v2 spec called for ``safety_weeks = base + k·|β|``.
@@ -21,9 +39,20 @@ Public API:
     parse_lead_time_weeks(val) -> (float | None, bool)
     parse_case_pack(val) -> int
     compute_dc_stats(weekly) -> pd.DataFrame
-    compute_lead_time_from_po(po, dc_map) -> pd.DataFrame
+    compute_lead_time_from_po(po, dc_map) -> pd.DataFrame   # now also returns σ_LT
+    compute_abc_xyz(weekly, dc_stats) -> pd.DataFrame
     prepare_item_master(im) -> pd.DataFrame
     build_reorder_alerts(weekly, inv, im, *, po, dc_map, ...) -> pd.DataFrame
+
+Tunables exposed for the UI (tier-1 policy sliders):
+    tier_z_overrides        : dict[str, float] — per-tier Z override, e.g.
+                              {'AX': 2.05, 'CZ': 0.84}. Merges on top of
+                              ABC_XYZ_Z; unmentioned tiers keep defaults.
+    safety_stock_multiplier : float, default 1.0. Scales final SS up/down
+                              (e.g. 1.2 = "POP wants +20% cushion globally").
+    forward_cover_by_tier   : dict[str, float] — per-tier order-up-to cover.
+                              e.g. {'AX': 8, 'CZ': 4}. Lanes not in the dict
+                              use the scalar forward_cover_weeks.
 """
 
 from __future__ import annotations
@@ -34,12 +63,30 @@ import re
 import numpy as np
 import pandas as pd
 
-SERVICE_LEVEL_Z = 1.65        # 95% service level under normal demand
-FORWARD_COVER_WEEKS = 4       # weeks of post-arrival coverage to order up to
+SERVICE_LEVEL_Z = 2.33        # 99% service level — legacy default for
+                              # callers that bypass ABC/XYZ tiering. Used
+                              # when tier_z is None or tier_table missing.
+FORWARD_COVER_WEEKS = 6       # weeks of post-arrival coverage to order up to.
+                              # Bumped 4→6 after backtest: larger, less
+                              # frequent orders keep on_hand above zero
+                              # through lead-time gaps (the real failure mode
+                              # is mid-cycle bursts, not order sizing)
 DEFAULT_LEAD_WEEKS = 13       # 3 months — matches modal Lead Time
 MONTHS_TO_WEEKS = 4.33        # 365.25 / 12 / 7
 MIN_WEEKS_FOR_HIGH = 8        # same low-data threshold as organic_run_rate
 MIN_POS_FOR_LEAD = 3          # need ≥N PO receipts per lane to trust median
+MIN_POS_FOR_LT_STD = 3        # need ≥N receipts before trusting σ_LT
+
+# ABC/XYZ tier → Z-score (from inventory-demand-planning skill).
+# A-items get the highest service because stockout cost dwarfs holding cost;
+# C-items get the lowest because low value doesn't justify high SS investment.
+ABC_XYZ_Z = {
+    'AX': 1.96, 'AY': 1.65, 'AZ': 1.65,
+    'BX': 1.65, 'BY': 1.65, 'BZ': 1.28,
+    'CX': 1.28, 'CY': 1.28, 'CZ': 1.04,
+}
+ABC_REVENUE_CUTOFFS = (0.80, 0.95)  # cumulative revenue share: A ≤ 0.80, B ≤ 0.95, rest = C
+XYZ_CV_CUTOFFS = (0.50, 1.00)        # X: CV < 0.50, Y: 0.50-1.00, Z: > 1.00
 
 # Item-master Lead Time is freeform: "3 months", "3-4mths", "3~4wks", "2.5",
 # "Half a year or more". Rules:
@@ -155,8 +202,9 @@ def compute_lead_time_from_po(
     dc_map: dict,
     *,
     min_pos: int = MIN_POS_FOR_LEAD,
-) -> pd.DataFrame:
-    """Median actual lead time per (ITEMNMBR, DC) from PO receipt history.
+    min_pos_pool: int = 2,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Median actual lead time from PO receipt history.
 
     The item-master ``Lead Time`` field is freeform and sometimes wildly
     wrong (e.g. T-32206 says "Half a year or more" — parses to 26 wk — but
@@ -166,11 +214,14 @@ def compute_lead_time_from_po(
 
     Filtering: drop rows missing either date, drop QTY Shipped ≤ 0 (those
     are cancelled or header-only lines), drop nonsensical lead
-    (< 0 or > 400 days). ``min_pos`` gates the return — lanes with fewer
-    PO receipts are dropped here; the caller decides the fallback.
+    (< 0 or > 400 days).
 
-    Returns one row per (ITEMNMBR, DC) with:
-      lead_time_days_med, lead_time_wk_po, n_pos.
+    Two granularities returned — caller chooses precedence:
+      per_dc  : per (ITEMNMBR, DC), requires ≥ ``min_pos`` receipts.
+      per_sku : per ITEMNMBR pooled across DCs, requires ≥ ``min_pos_pool``.
+                For imported CPG the lead is factory + ocean + port — DC is
+                a small-delta variable, so pooling is defensible when the
+                per-DC sample is too thin (early-backtest weeks).
     """
     p = po.copy()
     p['PO Date']      = pd.to_datetime(p['PO Date'])
@@ -182,15 +233,31 @@ def compute_lead_time_from_po(
     p['DC'] = p['Location Code'].astype(str).map(dc_map)
     p = p.dropna(subset=['DC'])
 
-    out = (
+    per_dc = (
         p.groupby(['Item Number', 'DC'])
          .agg(lead_time_days_med=('lead_days', 'median'),
+              lead_time_days_std=('lead_days', 'std'),
               n_pos=('PO Number', 'nunique'))
          .reset_index()
          .rename(columns={'Item Number': 'ITEMNMBR'})
     )
-    out['lead_time_wk_po'] = out['lead_time_days_med'] / 7.0
-    return out[out['n_pos'] >= min_pos].reset_index(drop=True)
+    per_dc['lead_time_wk_po'] = per_dc['lead_time_days_med'] / 7.0
+    per_dc['lead_time_wk_std_po'] = per_dc['lead_time_days_std'] / 7.0
+    per_dc = per_dc[per_dc['n_pos'] >= min_pos].reset_index(drop=True)
+
+    per_sku = (
+        p.groupby('Item Number')
+         .agg(lead_time_days_pool_med=('lead_days', 'median'),
+              lead_time_days_pool_std=('lead_days', 'std'),
+              n_pos_pool=('PO Number', 'nunique'))
+         .reset_index()
+         .rename(columns={'Item Number': 'ITEMNMBR'})
+    )
+    per_sku['lead_time_wk_pool'] = per_sku['lead_time_days_pool_med'] / 7.0
+    per_sku['lead_time_wk_std_pool'] = per_sku['lead_time_days_pool_std'] / 7.0
+    per_sku = per_sku[per_sku['n_pos_pool'] >= min_pos_pool].reset_index(drop=True)
+
+    return per_dc, per_sku
 
 
 def prepare_item_master(im: pd.DataFrame) -> pd.DataFrame:
@@ -212,6 +279,54 @@ def prepare_item_master(im: pd.DataFrame) -> pd.DataFrame:
     out['lead_parsed'] = parsed.apply(lambda t: t[1])
     out['case_pack'] = out['Case Pack'].apply(parse_case_pack)
     return out
+
+
+def compute_abc_xyz(
+    weekly: pd.DataFrame,
+    dc_stats: pd.DataFrame,
+    *,
+    abc_cutoffs: tuple[float, float] = ABC_REVENUE_CUTOFFS,
+    xyz_cutoffs: tuple[float, float] = XYZ_CV_CUTOFFS,
+) -> pd.DataFrame:
+    """Classify each lane on ABC (SKU-level revenue) × XYZ (lane-level CV).
+
+    ABC is SKU-level because revenue concentrates at the item — classifying
+    per-lane would double-count one hero SKU that sells through all 3 DCs.
+    XYZ is lane-level because demand predictability can genuinely differ by
+    DC (one channel steady, another bursty).
+
+    Returns (ITEMNMBR, DC, abc, xyz, tier, tier_z). ``tier_z`` is pulled
+    from ``ABC_XYZ_Z`` and feeds directly into the safety-stock formula.
+    """
+    sku_rev = (
+        weekly.groupby('ITEMNMBR', as_index=False)['revenue']
+              .sum()
+              .sort_values('revenue', ascending=False)
+              .reset_index(drop=True)
+    )
+    total = sku_rev['revenue'].sum()
+    sku_rev['cum_share'] = sku_rev['revenue'].cumsum() / total if total > 0 else 0.0
+    a_cut, b_cut = abc_cutoffs
+    sku_rev['abc'] = np.select(
+        [sku_rev['cum_share'] <= a_cut, sku_rev['cum_share'] <= b_cut],
+        ['A', 'B'],
+        default='C',
+    )
+
+    x_cut, y_cut = xyz_cutoffs
+    xyz = dc_stats[['ITEMNMBR', 'DC', 'cv']].copy()
+    cv_f = xyz['cv'].fillna(np.inf)  # treat unknown CV as erratic
+    xyz['xyz'] = np.select(
+        [cv_f < x_cut, cv_f < y_cut],
+        ['X', 'Y'],
+        default='Z',
+    )
+
+    out = xyz.merge(sku_rev[['ITEMNMBR', 'abc']], on='ITEMNMBR', how='left')
+    out['abc'] = out['abc'].fillna('C')  # lane with no revenue → C
+    out['tier'] = out['abc'] + out['xyz']
+    out['tier_z'] = out['tier'].map(ABC_XYZ_Z).astype(float)
+    return out[['ITEMNMBR', 'DC', 'abc', 'xyz', 'tier', 'tier_z']]
 
 
 def _round_up_case(qty: float, case_pack: float) -> float:
@@ -236,6 +351,11 @@ def build_reorder_alerts(
     min_weeks_for_high: int = MIN_WEEKS_FOR_HIGH,
     min_pos_for_lead: int = MIN_POS_FOR_LEAD,
     run_rate_quantile: float | None = None,
+    use_abc_xyz: bool = True,
+    use_lt_variance: bool = True,
+    tier_z_overrides: dict | None = None,
+    safety_stock_multiplier: float = 1.0,
+    forward_cover_by_tier: dict | None = None,
 ) -> pd.DataFrame:
     """Return a (SKU × DC) reorder alert table sorted by urgency.
 
@@ -246,21 +366,41 @@ def build_reorder_alerts(
     ``medium`` for two of three; ``low`` otherwise.
 
     Lead time precedence (``lead_time_source``):
-      - ``po_history`` : median ``Receipt Date − PO Date`` when the lane
-                         has ≥ ``min_pos_for_lead`` PO receipts. Most
-                         accurate — reflects real vendor + route + freight.
+      - ``po_history`` : median ``Receipt Date − PO Date`` on this (SKU,DC)
+                         when the lane has ≥ ``min_pos_for_lead`` receipts.
+                         Most accurate — reflects real vendor + route.
+      - ``po_pooled``  : SKU-level PO-history median, pooled across DCs.
+                         Used when per-DC sample is thin (early backtest
+                         weeks). Defensible because factory + ocean dominate.
       - ``parsed``     : parsed from item-master ``Lead Time`` string.
-                         Used when PO history is thin / missing.
+                         Used when no usable PO history.
       - ``default``    : ``default_lead_weeks``. Used only as last resort.
 
+    Toggles:
+      use_abc_xyz       : tier Z per ABC × XYZ. Off → flat service_level_z.
+      use_lt_variance   : include d² · σ_LT² term in safety stock when PO
+                          history gives σ_LT. Off → textbook Z · σ_d · √LT.
+
+    Policy sliders (for UI):
+      tier_z_overrides         : {'AX': 2.05, 'CZ': 0.84} — per-tier Z
+                                 override. Merges on top of ABC_XYZ_Z;
+                                 unmentioned tiers keep their defaults.
+      safety_stock_multiplier  : scales final safety_stock up/down. 1.2 =
+                                 "POP wants +20% cushion across the board."
+      forward_cover_by_tier    : {'AX': 8, 'CZ': 4} — per-tier order-up-to
+                                 cover weeks. Lanes not in the dict use the
+                                 global forward_cover_weeks.
+
     Required inputs:
-        weekly : ITEMNMBR, DC, week_start, qty_base (clean_demand_weekly).
+        weekly : ITEMNMBR, DC, week_start, qty_base, revenue
+                 (clean_demand_weekly — revenue needed for ABC tiering).
         inv    : Item Number, DC, Available, On Hand, Description.
         im     : item_master with Item Number, Description, Case Pack,
                  Lead Time, Maufactuer/ CoPacker, Country of Origin, MOQ.
         po     : PO history (optional) with PO Number, PO Date,
                  Receipt Date, Item Number, Location Code, QTY Shipped.
-                 When provided with dc_map, drives PO-history lead times.
+                 When provided with dc_map, drives PO-history lead times
+                 AND lead-time σ for the LT-variance term.
         dc_map : LOCNCODE → DC label mapping, e.g. {'1':'SF','2':'NJ','3':'LA'}.
                  Required when ``po`` is provided.
     """
@@ -278,29 +418,83 @@ def build_reorder_alerts(
     rec = dc_stats.merge(inv_p, on=['ITEMNMBR', 'DC'], how='left')
     rec = rec.merge(im_p, on='ITEMNMBR', how='left')
 
+    effective_tier_z = {**ABC_XYZ_Z, **(tier_z_overrides or {})}
+
+    if use_abc_xyz and 'revenue' in weekly.columns:
+        tiers = compute_abc_xyz(weekly, dc_stats)
+        rec = rec.merge(tiers, on=['ITEMNMBR', 'DC'], how='left')
+        rec['tier'] = rec['tier'].fillna('CZ')
+        # Re-map tier → Z using the override-merged table (compute_abc_xyz
+        # used the module default). Overrides flow through here.
+        rec['tier_z'] = rec['tier'].map(effective_tier_z).astype(float)
+        rec['z_applied'] = rec['tier_z']
+    else:
+        # Flat mode: one Z across all lanes. tier_z_overrides is deliberately
+        # ignored here — if the user disabled tiering, per-tier Z-tweaks don't
+        # apply. They should change service_level_z directly.
+        rec['abc'] = 'C'
+        rec['xyz'] = 'Z'
+        rec['tier'] = 'CZ'
+        rec['tier_z'] = float(service_level_z)
+        rec['z_applied'] = float(service_level_z)
+
     if po is not None and dc_map is not None:
-        po_lead = compute_lead_time_from_po(po, dc_map, min_pos=min_pos_for_lead)
-        rec = rec.merge(po_lead[['ITEMNMBR', 'DC', 'lead_time_wk_po', 'n_pos']],
-                        on=['ITEMNMBR', 'DC'], how='left')
+        po_dc, po_sku = compute_lead_time_from_po(po, dc_map, min_pos=min_pos_for_lead)
+        rec = rec.merge(
+            po_dc[['ITEMNMBR', 'DC', 'lead_time_wk_po', 'lead_time_wk_std_po', 'n_pos']],
+            on=['ITEMNMBR', 'DC'], how='left')
+        rec = rec.merge(
+            po_sku[['ITEMNMBR', 'lead_time_wk_pool', 'lead_time_wk_std_pool', 'n_pos_pool']],
+            on='ITEMNMBR', how='left')
     else:
         rec['lead_time_wk_po'] = np.nan
+        rec['lead_time_wk_std_po'] = np.nan
+        rec['lead_time_wk_pool'] = np.nan
+        rec['lead_time_wk_std_pool'] = np.nan
         rec['n_pos'] = 0
+        rec['n_pos_pool'] = 0
 
-    lead_from_po = rec['lead_time_wk_po'].notna()
-    lead_from_parsed = rec['lead_parsed'].fillna(False) & ~lead_from_po
+    lead_from_po     = rec['lead_time_wk_po'].notna()
+    lead_from_pool   = rec['lead_time_wk_pool'].notna() & ~lead_from_po
+    lead_from_parsed = rec['lead_parsed'].fillna(False) & ~lead_from_po & ~lead_from_pool
     rec['lead_time_source'] = np.select(
-        [lead_from_po, lead_from_parsed],
-        ['po_history', 'parsed'],
+        [lead_from_po, lead_from_pool, lead_from_parsed],
+        ['po_history', 'po_pooled', 'parsed'],
         default='default',
     )
-    rec['lead_time_wk'] = np.where(
-        lead_from_po, rec['lead_time_wk_po'], rec['lead_time_wk'],
+    rec['lead_time_wk'] = np.select(
+        [lead_from_po, lead_from_pool],
+        [rec['lead_time_wk_po'], rec['lead_time_wk_pool']],
+        default=rec['lead_time_wk'],
     )
     rec['lead_time_wk'] = rec['lead_time_wk'].fillna(default_lead_weeks)
     rec['lead_known'] = rec['lead_time_source'] != 'default'
 
+    # σ_LT pulled with the same precedence as LT itself. Requires ≥3 POs
+    # (n_pos or n_pos_pool) for std to be meaningful; fall back to 0.
+    have_lt_std_dc = (rec['lead_time_wk_std_po'].notna()
+                      & (rec['n_pos'].fillna(0) >= MIN_POS_FOR_LT_STD))
+    have_lt_std_pool = (rec['lead_time_wk_std_pool'].notna()
+                        & (rec['n_pos_pool'].fillna(0) >= MIN_POS_FOR_LT_STD)
+                        & ~have_lt_std_dc)
+    rec['lt_std_wk'] = np.select(
+        [have_lt_std_dc, have_lt_std_pool],
+        [rec['lead_time_wk_std_po'], rec['lead_time_wk_std_pool']],
+        default=0.0,
+    )
+    rec['lt_std_known'] = (rec['lt_std_wk'] > 0)
+
+    std_wk  = rec['std_wk'].fillna(0)
+    lt_wk   = rec['lead_time_wk']
+    lt_std  = rec['lt_std_wk'] if use_lt_variance else 0.0
+    run_rt  = rec['run_rate_wk'].fillna(0)
+    # Full formula: SS = Z · √(LT · σ_d² + d² · σ_LT²).
+    # When σ_LT = 0 (unknown or toggle off), this reduces to Z · σ_d · √LT
+    # — identical to the prior formula, so this is a strict superset.
+    variance_term = lt_wk * std_wk**2 + run_rt**2 * (lt_std if use_lt_variance else 0.0)**2
     rec['safety_stock'] = (
-        service_level_z * rec['std_wk'].fillna(0) * np.sqrt(rec['lead_time_wk'])
+        rec['z_applied'] * np.sqrt(variance_term.clip(lower=0))
+        * float(safety_stock_multiplier)
     )
     rec['reorder_point'] = (
         rec['run_rate_wk'] * rec['lead_time_wk'] + rec['safety_stock']
@@ -312,9 +506,20 @@ def build_reorder_alerts(
     )
     rec['reorder_flag'] = rec['available_now'].fillna(0) < rec['reorder_point']
 
+    # Per-tier forward cover (fallback to global scalar). Exposed as a column
+    # so the alert table shows which lane used which cover — auditable in UI.
+    if forward_cover_by_tier:
+        rec['forward_cover_wk'] = (
+            rec['tier'].map(forward_cover_by_tier)
+                       .astype(float)
+                       .fillna(float(forward_cover_weeks))
+        )
+    else:
+        rec['forward_cover_wk'] = float(forward_cover_weeks)
+
     raw_qty = (
         rec['reorder_point']
-        + forward_cover_weeks * rec['run_rate_wk']
+        + rec['forward_cover_wk'] * rec['run_rate_wk']
         - rec['available_now'].fillna(0)
     ).clip(lower=0)
     rec['suggested_qty_raw'] = raw_qty
@@ -339,12 +544,18 @@ def build_reorder_alerts(
         default='low',
     )
 
+    rec['n_pos'] = rec['n_pos'].fillna(0).astype(int)
+    rec['n_pos_pool'] = rec['n_pos_pool'].fillna(0).astype(int)
+
     ordered_cols = [
         'ITEMNMBR', 'Description', 'DC', 'vendor', 'country',
         'run_rate_wk', 'std_wk', 'cv', 'n_clean_weeks',
-        'lead_time_wk', 'lead_time_source', 'n_pos', 'Lead Time',
+        'abc', 'xyz', 'tier', 'z_applied',
+        'lead_time_wk', 'lt_std_wk', 'lt_std_known',
+        'lead_time_source', 'n_pos', 'n_pos_pool', 'Lead Time',
         'available_now', 'on_hand_now',
         'weeks_of_cover', 'reorder_point', 'safety_stock',
+        'forward_cover_wk',
         'reorder_flag', 'suggested_qty', 'suggested_cases',
         'case_pack', 'MOQ',
         'first_week', 'last_week',
