@@ -4,7 +4,11 @@ Every sales row gets four boolean flags that tell the F1 forecaster which
 rows reflect "clean" demand and which are polluted:
 
     is_promo            : customer × brand × month matches TPR chargeback calendar
-    is_markdown         : Unit_Price_adj < factor × SKU median price
+    is_markdown         : Unit_Price_adj < factor × (SKU × channel) median price
+                          — per-channel denominator avoids HF false positives
+                          (their baseline is structurally below pooled median)
+                          and MM false negatives (HF drags pooled median down
+                          so real MM markdowns slip through).
     is_stockout_week    : on_hand_est <= 0 at week_start (strict, high-conf only)
     is_lost_demand_week : low_stock_week AND cust_below_normal
                           — detects the prompt's "ordered 1,000, shipped 500"
@@ -46,23 +50,57 @@ def tag_promo(sales: pd.DataFrame, promo_cal: pd.DataFrame) -> pd.DataFrame:
     return out.drop(columns=['promo_ym'])
 
 
-def tag_markdown(sales: pd.DataFrame, factor: float) -> pd.DataFrame:
-    """Unit_Price_adj < factor × SKU median -> is_markdown.
+def tag_markdown(
+    sales: pd.DataFrame,
+    factor: float,
+    channel_col: str = 'SALESCHANNEL',
+    min_n: int = 5,
+) -> pd.DataFrame:
+    """Unit_Price_adj < factor × (SKU × channel) median -> is_markdown.
 
-    Median is computed on non-promo, positive-price rows so a SKU that's
+    Medians are computed on non-promo, positive-price rows so a SKU that's
     frequently discounted doesn't anchor its own "normal" price low.
+
+    Per-(SKU × channel) median, not pooled across channels: MM, AM, HF often
+    price the same SKU at structurally different tiers (e.g., HF pays ~14%
+    below pooled median as a rule; AM prices Tiger Balm above MM). A pooled
+    median produces HF false positives and MM false negatives. Per-channel
+    medians adapt to each channel's own baseline.
+
+    Falls back to pooled SKU median when a (SKU × channel) cell has < min_n
+    non-promo rows (too noisy to trust). Rows whose channel_col is NA (a few
+    salespersons missing from the key) also fall back.
+
+    Adds columns:
+        sku_median_price   : pooled SKU median (kept for reference / diagnostics)
+        markdown_denom     : the actual denominator used (per-channel or pooled)
+        markdown_threshold : factor * markdown_denom
+        is_markdown        : bool
     """
     base = sales[(~sales['is_promo']) & (sales['Unit_Price_adj'] > 0)]
+
+    # Pooled SKU median — fallback denominator.
     sku_median = base.groupby('ITEMNMBR')['Unit_Price_adj'].median()
+
+    # Per-(SKU × channel) median, gated by MIN_N.
+    sc_stats = (
+        base.groupby(['ITEMNMBR', channel_col])['Unit_Price_adj']
+            .agg(sc_median='median', sc_n='size')
+            .reset_index()
+    )
+    sc_stats = sc_stats[sc_stats['sc_n'] >= min_n][['ITEMNMBR', channel_col, 'sc_median']]
+
     out = sales.copy()
-    out['sku_median_price']   = out['ITEMNMBR'].map(sku_median)
-    out['markdown_threshold'] = out['sku_median_price'] * factor
+    out['sku_median_price'] = out['ITEMNMBR'].map(sku_median)
+    out = out.merge(sc_stats, on=['ITEMNMBR', channel_col], how='left')
+    out['markdown_denom']     = out['sc_median'].fillna(out['sku_median_price'])
+    out['markdown_threshold'] = out['markdown_denom'] * factor
     out['is_markdown'] = (
         (out['Unit_Price_adj'] > 0)
         & (out['Unit_Price_adj'] < out['markdown_threshold'])
-        & out['sku_median_price'].notna()
+        & out['markdown_denom'].notna()
     )
-    return out
+    return out.drop(columns=['sc_median'])
 
 
 def tag_stockout_week(sales: pd.DataFrame, inv_weekly: pd.DataFrame) -> pd.DataFrame:
@@ -171,7 +209,9 @@ def tag_transactions(
     promo_cal: pd.DataFrame,
     inv_weekly: pd.DataFrame,
     dc_map: dict | None = None,
-    markdown_factor: float = 0.70,
+    markdown_factor: float = 0.85,
+    markdown_channel_col: str = 'SALESCHANNEL',
+    markdown_min_n: int = 5,
     lost_demand_cover_k: float = 1.0,
     lost_demand_order_f: float = 0.70,
     lost_demand_min_n: int = 3,
@@ -179,14 +219,22 @@ def tag_transactions(
     """Add the four demand-quality flags + is_clean_demand to sales.
 
     Args:
-        sales: sales_with_brand from step 02 (needs CUSTNMBR, brand, DOCDATE,
-            LOCNCODE, ITEMNMBR, QUANTITY_adj, QTYBSUOM, Unit_Price_adj).
+        sales: sales_with_brand from step 02, with SALESCHANNEL already
+            attached (see src.channel.attach_channel). Needs CUSTNMBR, brand,
+            DOCDATE, LOCNCODE, ITEMNMBR, QUANTITY_adj, QTYBSUOM, Unit_Price_adj,
+            SALESCHANNEL.
         promo_cal: promo calendar from step 03 (CUSTNMBR × brand × promo_ym).
             promo_ym should be Period[M]; caller handles string round-trip.
         inv_weekly: per-SKU-per-DC weekly on-hand from step 04 (ITEMNMBR, DC,
             week_start, on_hand_est, confidence).
         dc_map: LOCNCODE -> DC string mapping (defaults to SF/NJ/LA).
-        markdown_factor: is_markdown cutoff as fraction of SKU median price.
+        markdown_factor: is_markdown cutoff as fraction of (SKU × channel)
+            median price. Default 0.85 (15% off) is calibrated to where
+            customer qty-per-order starts jumping above baseline (≥ 2.6×
+            normal qty at 10–20% below median; see 05b experiment).
+        markdown_channel_col: column name holding the channel code (MM/AM/HF).
+        markdown_min_n: min rows per (SKU, channel) to trust the per-channel
+            median. Below that the row falls back to the pooled SKU median.
         lost_demand_cover_k: low_stock_week fires if week_on_hand < K × typical
             weekly base sales. Lower = more conservative.
         lost_demand_order_f: cust_below_normal fires if order < F × cust median.
@@ -211,7 +259,12 @@ def tag_transactions(
 
     # ---- Per-flag stages ----------------------------------------------------
     out = tag_promo(out, promo_cal)
-    out = tag_markdown(out, factor=markdown_factor)
+    out = tag_markdown(
+        out,
+        factor=markdown_factor,
+        channel_col=markdown_channel_col,
+        min_n=markdown_min_n,
+    )
     out = tag_stockout_week(out, inv_weekly)
     out = tag_lost_demand_week(
         out,
@@ -242,6 +295,8 @@ def tag_transactions(
         'cust_below_normal_true':   int(out['cust_below_normal'].sum()),
         'is_clean_demand_true':     int(out['is_clean_demand'].sum()),
         'markdown_factor':          markdown_factor,
+        'markdown_channel_col':     markdown_channel_col,
+        'markdown_min_n':           markdown_min_n,
         'lost_demand_cover_k':      lost_demand_cover_k,
         'lost_demand_order_f':      lost_demand_order_f,
         'lost_demand_min_n':        lost_demand_min_n,

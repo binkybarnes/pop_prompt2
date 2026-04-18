@@ -4,7 +4,7 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 06 promoted to `src/channel.py`, next up is step 07)
+- (nothing actively in progress — step 05 markdown detector recalibrated to per-(SKU × channel) median, step 06 re-verified with new flags, next up is step 07)
 
 ## Next
 
@@ -21,6 +21,13 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- **Markdown detector recalibrated (step 05 + step 06 re-verified)** — switched from pooled SKU median @ factor 0.70 to per-(SKU × channel) median @ factor 0.85 with pooled-median fallback when a (SKU, channel) cell has < 5 non-promo positive-price rows. Motivation: pooled median was dragged down by HF shelf premiums (HF median ratio 0.864) which under-flagged MM markdowns and over-flagged HF. Factor bumped 0.70 → 0.85 calibrated from demand-response curve (qty_ratio jumps 1.2× → 2.6× between 10–20% below median, per SKU with MAD ~$0.24 on $3.36 median).
+  - Row-level only — empirically confirmed no post-markdown demand trough (offsets +1..+6 identical to −3..−1 in zero-qty rate and mean_ratio), so no propagation needed.
+  - New flagged totals: `is_markdown` **5,491 → 31,486 (2.3% → 13.3%)**; `is_clean_demand` **85.5% → 75.1%**.
+  - Per-channel markdown share: AM 13.9% / MM 13.3% / HF 9.4%. Clean-demand share: AM **85.9%** / MM **67.5%** / HF **56.2%**.
+  - `src/tagging.py` API: `tag_markdown(sales, factor, channel_col='SALESCHANNEL', min_n=5)`; `tag_transactions(..., markdown_factor=0.85, markdown_channel_col='SALESCHANNEL', markdown_min_n=5)`. Adds `markdown_denom` column (per-channel median, pooled fallback).
+  - Step 05 notebook now calls `attach_channel()` upstream before tagging; step 06 cell made idempotent (detects existing `SALESCHANNEL` and skips merge). `sales_tagged.parquet` now 236,818 × 44; `sales_tagged_channel.parquet` still 236,818 × 44 (same schema after step 06 no-op).
+  - Side-experiment notebook: `pipeline/05b_markdown_channel_exp.ipynb` (diagnosis + calibration, keep for reference).
 - `src/channel.py` — promoted channel-attachment logic from `06_channel.ipynb`. Public API: `attach_channel(sales, slprsn_key) -> sales_with_channel` (thin wrapper around the left-merge on SLPRSNID). Notebook re-executed end-to-end after refactor; outputs identical (236,818 × 43, 4 null SALESCHANNEL rows matching 4 null SLPRSNID).
 - **Pipeline step 06 (channel mapping)** — verified end-to-end. All 236,818 rows preserved, 2 columns added (`SALESCHANNEL`, `SALESCHANNEL_DESC`). 100% coverage minus 4 rows with null SLPRSNID.
   - Channel mix: **MM** (American Mainstream) 113,226 / **AM** (Asian Ethnic) 107,399 / **HF** (Health Food) 16,189.
