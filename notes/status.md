@@ -4,12 +4,12 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 05 lost-demand flag verified, next up is step 06)
+- (nothing actively in progress — step 05 promoted to `src/tagging.py`, next up is step 06)
 
 ## Next
 
-- **Pipeline step 06 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Promote step 05 to `src/tagging.py` first.
-- **Potentially tweak lost-demand thresholds** — current detector is very conservative (55 rows). Could loosen `LOST_DEMAND_COVER_K` from 1.0 → 2.0 (flag weeks with <2 weeks of cover instead of <1) if we want more recall. Current precision looks strong (LD.3 DC substitution 61%, LD.5 spot-check clean).
+- **Pipeline step 06 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Import `tag_transactions` from `src.tagging`.
+- **Revisit feature scope (F1/F2) after pipeline** — stockout-caused demand loss is <0.2% of rows even at `LOST_DEMAND_COVER_K=10` (K=1 -> 55 rows, K=10 -> 440). That's a real finding: POP's demand is mostly promo/markdown-polluted (14.7%), not stockout-polluted. The F1 forecaster's main cleaning job is promos, not stockout imputation. Worth discussing whether that shifts F1/F2 framing after all steps are wired.
 
 ## Blocked
 
@@ -21,6 +21,7 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- `src/tagging.py` — promoted tagging logic from `05_tag_transactions.ipynb`. Public API: `tag_transactions(sales, promo_cal, inv_weekly, *, markdown_factor, lost_demand_cover_k, lost_demand_order_f, lost_demand_min_n) -> (sales_tagged, meta)`. Helpers: `tag_promo`, `tag_markdown`, `tag_stockout_week`, `tag_lost_demand_week`. Notebook re-executed end-to-end after refactor; outputs identical (440 TRUE at K=10, is_clean_demand 85.4%, shape 236,818 × 41).
 - **Pipeline step 05 (tag transactions)** — verified end-to-end. All 236,818 sales rows preserved, 5 flags added (`is_promo`, `is_markdown`, `is_stockout_week`, `is_lost_demand_week`, `is_clean_demand`).
   - `is_promo` = exact (CUSTNMBR, brand, sale_ym) match against `promo_cal`. **12.4%** of rows (29,421). Brand mix: tiger balm 22k / ginger chew 7.3k / am gsg 86. Sell-in-window refinement deferred.
   - `is_markdown` = `Unit_Price_adj < 0.70 × SKU median` (median computed on non-promo positive-price rows to avoid self-anchoring low). **2.3%** (5,491). Median markdown depth 35% off.
@@ -34,8 +35,8 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
   - `is_clean_demand` = none of `is_promo / is_markdown / is_stockout_week / is_lost_demand_week` fire. **85.5%** (202,473 rows — the F1 forecaster's input).
   - Markdown threshold (0.70) + rev-lookup on SKU median shown with histogram validation.
   - Artifact: `sales_tagged.parquet` (236,818 × 41) — adds `QTY_BASE`, `typical_weekly_base`, `low_stock_week`, `cust_median_qty`, `cust_below_normal`, `is_lost_demand_week`.
-  - **Known tradeoff:** detector is very conservative (low recall, high precision). Only finds the biggest outages. Loosening `LOST_DEMAND_COVER_K` (1.0 → 2.0) would catch weeks with <2w cover; evaluate if F1 forecast needs more signal.
-  - **Not yet promoted** to `src/tagging.py` — do before step 06.
+  - **Known tradeoff:** detector is very conservative (low recall, high precision). At `K=1` → 55 rows; `K=10` → 440 rows (still 0.19%). Ceiling won't cross ~1% — the real finding is that POP's stockout footprint is genuinely tiny.
+  - Current notebook ships at `K=10` — broader window (4 → 11 flagged weeks for T-32206 SF) and LD.3 substitution rate climbs to 71.4%.
 - **Pipeline step 04 (inventory rewind)** — verified end-to-end. Anchor `2026-04-13`, rewind start `2023-01-02`, 173 weekly snapshots × 219 (SKU × DC) = 37,887 rows.
   - Identity check PASS (`max |today_rewind − snapshot| = 0.000`).
   - UOM fix: `sales.QTY_BASE = QUANTITY_adj × QTYBSUOM` row-level; `transfers.QTY_BASE = TRX QTY × pack` via per-(SKU, UOM) median QTYBSUOM learned from sales (fallback: per-SKU median, then 1.0). POs verified in base units (T-32206 lifetime PO/sales ratio 0.92).
