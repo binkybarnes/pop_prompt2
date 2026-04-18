@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Before starting any task, read notes/README.md for the index to all project docs.
+
 ## Project context
 
 Hack the Coast 2026 submission for **Prince of Peace Enterprises (POP)** Problem 1 (Demand & Order Intelligence) + Problem 3 (Inventory & Fulfillment). POP is a CPG importer/distributor (Tiger Balm, POP Ginger Chews, Ferrero, etc.) with 3 DCs (SF / NJ / LA), ~800 SKUs, and two very different sales channels (American mass/supermarket vs Asian herbal/specialty). No API, no WMS, no cloud warehouse — everything is CSV/Excel exports out of Microsoft Dynamics GP + Cavallo SalesPad.
@@ -10,14 +12,11 @@ The user is **not a business person**; prefer plain-English over jargon, explain
 
 ## Repo layout
 
-- `notes/` — **source of truth** for context, plans, and decisions. Read these before making design choices:
-  - `prompt1_notes.md` — Problem 1 brief, vocabulary, inferred problems
-  - `prompt2_notes.md` — Problem 3 brief (fulfillment / chargebacks)
-  - `feature_tree.md` — MoSCoW-prioritized features F0–F12 with layer mapping
-  - `execution_plan.md` — 5-layer architecture, team split, 2-day schedule
-  - `data_dictionary.md` — which data files matter (Tier 1) vs skip (Tier 3), column meanings, location codes, join keys
-- `data/` — **gitignored**. Raw POP files (CSV + XLSX). The only Tier-1 files that matter for Problem 1 are `POP_SalesTransactionHistory.csv`, `POP_InventorySnapshot.xlsx`, `POP_ItemSpecMaster.xlsx`, `POP_VendorMaster.xlsx`, `POP_PurchaseOrderHistory.XLSX`, `POP_ChargeBack_Deductions_Penalties_Freight.xlsx` (only the `Data - Deductions & Cause Code` sheet), `POP_DataDictionary.xlsx`.
-- `exploration_f1.ipynb` — live notebook building F1 (promo/markdown separation). Cells run top-to-bottom; earlier cells define `sales`, `cb`, `tpr`, `promo_cal`, `extract_brand`, etc. that later cells reuse.
+- `notes/` — **source of truth** for context, plans, and decisions. **Always start with `notes/README.md`** — it indexes every other doc and tells you which ones to read for your current task. Key files behind that index: `feature_tree_v2.md` (locked spec), `data_notes.md` (what the data actually looks like), `status.md` (what's currently in progress).
+- `pipeline/` — step-by-step pipeline notebooks (`01_load.ipynb` through `09_reorder_alerts.ipynb`). Each notebook follows the same skeleton: Imports → Load upstream artifact → Do the work → Validate → Save → Promote note. Intermediate parquets live in `pipeline/artifacts/` (gitignored).
+- `src/` — production Python modules. Logic gets promoted here from notebooks once verified (see each notebook's `## 6. Promote` section). Start with stubs; fill in as each step is validated.
+- `data/` — **gitignored**. Raw POP files (CSV + XLSX). The only Tier-1 files that matter for Problem 1 are `POP_SalesTransactionHistory.csv`, `POP_InventorySnapshot.xlsx`, `POP_ItemSpecMaster.xlsx`, `POP_VendorMaster.xlsx`, `POP_PurchaseOrderHistory.XLSX`, `POP_ChargeBack_Deductions_Penalties_Freight.xlsx` (only the `Data - Deductions & Cause Code` sheet), `SLPRSNID_SALESCHANNEL_KEY.xlsx`, `POP_DataDictionary.xlsx`.
+- `exploration_f1.ipynb` — earlier scratch notebook for F1 (promo/markdown tagging + brand extraction). Being migrated into `pipeline/02_brand.ipynb` + `pipeline/05_tag_transactions.ipynb`. Reference only; don't extend it.
 - `exploration.ipynb` — scratch notebook.
 
 ## Architecture: the 5-layer pipeline
