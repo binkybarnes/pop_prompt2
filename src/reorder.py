@@ -43,6 +43,16 @@ Public API:
     compute_abc_xyz(weekly, dc_stats) -> pd.DataFrame
     prepare_item_master(im) -> pd.DataFrame
     build_reorder_alerts(weekly, inv, im, *, po, dc_map, ...) -> pd.DataFrame
+
+Tunables exposed for the UI (tier-1 policy sliders):
+    tier_z_overrides        : dict[str, float] — per-tier Z override, e.g.
+                              {'AX': 2.05, 'CZ': 0.84}. Merges on top of
+                              ABC_XYZ_Z; unmentioned tiers keep defaults.
+    safety_stock_multiplier : float, default 1.0. Scales final SS up/down
+                              (e.g. 1.2 = "POP wants +20% cushion globally").
+    forward_cover_by_tier   : dict[str, float] — per-tier order-up-to cover.
+                              e.g. {'AX': 8, 'CZ': 4}. Lanes not in the dict
+                              use the scalar forward_cover_weeks.
 """
 
 from __future__ import annotations
@@ -343,6 +353,9 @@ def build_reorder_alerts(
     run_rate_quantile: float | None = None,
     use_abc_xyz: bool = True,
     use_lt_variance: bool = True,
+    tier_z_overrides: dict | None = None,
+    safety_stock_multiplier: float = 1.0,
+    forward_cover_by_tier: dict | None = None,
 ) -> pd.DataFrame:
     """Return a (SKU × DC) reorder alert table sorted by urgency.
 
@@ -367,6 +380,16 @@ def build_reorder_alerts(
       use_abc_xyz       : tier Z per ABC × XYZ. Off → flat service_level_z.
       use_lt_variance   : include d² · σ_LT² term in safety stock when PO
                           history gives σ_LT. Off → textbook Z · σ_d · √LT.
+
+    Policy sliders (for UI):
+      tier_z_overrides         : {'AX': 2.05, 'CZ': 0.84} — per-tier Z
+                                 override. Merges on top of ABC_XYZ_Z;
+                                 unmentioned tiers keep their defaults.
+      safety_stock_multiplier  : scales final safety_stock up/down. 1.2 =
+                                 "POP wants +20% cushion across the board."
+      forward_cover_by_tier    : {'AX': 8, 'CZ': 4} — per-tier order-up-to
+                                 cover weeks. Lanes not in the dict use the
+                                 global forward_cover_weeks.
 
     Required inputs:
         weekly : ITEMNMBR, DC, week_start, qty_base, revenue
@@ -395,13 +418,20 @@ def build_reorder_alerts(
     rec = dc_stats.merge(inv_p, on=['ITEMNMBR', 'DC'], how='left')
     rec = rec.merge(im_p, on='ITEMNMBR', how='left')
 
+    effective_tier_z = {**ABC_XYZ_Z, **(tier_z_overrides or {})}
+
     if use_abc_xyz and 'revenue' in weekly.columns:
         tiers = compute_abc_xyz(weekly, dc_stats)
         rec = rec.merge(tiers, on=['ITEMNMBR', 'DC'], how='left')
         rec['tier'] = rec['tier'].fillna('CZ')
-        rec['tier_z'] = rec['tier_z'].fillna(ABC_XYZ_Z['CZ'])
+        # Re-map tier → Z using the override-merged table (compute_abc_xyz
+        # used the module default). Overrides flow through here.
+        rec['tier_z'] = rec['tier'].map(effective_tier_z).astype(float)
         rec['z_applied'] = rec['tier_z']
     else:
+        # Flat mode: one Z across all lanes. tier_z_overrides is deliberately
+        # ignored here — if the user disabled tiering, per-tier Z-tweaks don't
+        # apply. They should change service_level_z directly.
         rec['abc'] = 'C'
         rec['xyz'] = 'Z'
         rec['tier'] = 'CZ'
@@ -462,7 +492,10 @@ def build_reorder_alerts(
     # When σ_LT = 0 (unknown or toggle off), this reduces to Z · σ_d · √LT
     # — identical to the prior formula, so this is a strict superset.
     variance_term = lt_wk * std_wk**2 + run_rt**2 * (lt_std if use_lt_variance else 0.0)**2
-    rec['safety_stock'] = rec['z_applied'] * np.sqrt(variance_term.clip(lower=0))
+    rec['safety_stock'] = (
+        rec['z_applied'] * np.sqrt(variance_term.clip(lower=0))
+        * float(safety_stock_multiplier)
+    )
     rec['reorder_point'] = (
         rec['run_rate_wk'] * rec['lead_time_wk'] + rec['safety_stock']
     )
@@ -473,9 +506,20 @@ def build_reorder_alerts(
     )
     rec['reorder_flag'] = rec['available_now'].fillna(0) < rec['reorder_point']
 
+    # Per-tier forward cover (fallback to global scalar). Exposed as a column
+    # so the alert table shows which lane used which cover — auditable in UI.
+    if forward_cover_by_tier:
+        rec['forward_cover_wk'] = (
+            rec['tier'].map(forward_cover_by_tier)
+                       .astype(float)
+                       .fillna(float(forward_cover_weeks))
+        )
+    else:
+        rec['forward_cover_wk'] = float(forward_cover_weeks)
+
     raw_qty = (
         rec['reorder_point']
-        + forward_cover_weeks * rec['run_rate_wk']
+        + rec['forward_cover_wk'] * rec['run_rate_wk']
         - rec['available_now'].fillna(0)
     ).clip(lower=0)
     rec['suggested_qty_raw'] = raw_qty
@@ -511,6 +555,7 @@ def build_reorder_alerts(
         'lead_time_source', 'n_pos', 'n_pos_pool', 'Lead Time',
         'available_now', 'on_hand_now',
         'weeks_of_cover', 'reorder_point', 'safety_stock',
+        'forward_cover_wk',
         'reorder_flag', 'suggested_qty', 'suggested_cases',
         'case_pack', 'MOQ',
         'first_week', 'last_week',
