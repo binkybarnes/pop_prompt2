@@ -4,11 +4,11 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 05 markdown detector recalibrated to per-(SKU × channel) median, step 06 re-verified with new flags, next up is step 07)
+- (nothing actively in progress — step 07 clean-demand aggregation promoted to `src/demand.py`, next up is step 08)
 
 ## Next
 
-- **Pipeline step 07 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Upstream is `sales_tagged_channel.parquet`.
+- **Pipeline step 08 (elasticity / F2 curves)** — fit per-SKU × channel demand curves (log-log / isotonic / bucketed — pick per-SKU by holdout fit) using `clean_demand_weekly.parquet` as the scatter source. Output elasticity slope per (SKU, channel) which feeds back into F1's safety-stock sizing.
 - **Revisit feature scope (F1/F2) after pipeline** — stockout-caused demand loss is <0.2% of rows even at `LOST_DEMAND_COVER_K=10` (K=1 -> 55 rows, K=10 -> 440). That's a real finding: POP's demand is mostly promo/markdown-polluted (14.7%), not stockout-polluted. The F1 forecaster's main cleaning job is promos, not stockout imputation. Worth discussing whether that shifts F1/F2 framing after all steps are wired.
 
 ## Blocked
@@ -21,6 +21,15 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- `src/demand.py` — promoted clean-demand aggregation from `07_clean_demand.ipynb`. Public API: `build_clean_demand(sales, *, low_data_weeks=8) -> (weekly, summary, meta)` plus `aggregate_weekly`, `compute_organic_run_rate`. Notebook re-executed end-to-end after refactor; outputs identical (weekly 35,103 × 8, summary 568 × 11, 70 low-data cells).
+- **Pipeline step 07 (clean demand)** — verified end-to-end. Filters `is_clean_demand == True & SALESCHANNEL notna & DC notna`, aggregates to weekly + summary.
+  - `clean_demand_weekly.parquet` **35,103 × 8** — per (SKU × channel × DC × week_start). Columns: qty_base, revenue, n_txn, unit_price_wt (QTY_BASE-weighted mean unit price). Feeds F2 scatter/trend-stack.
+  - `organic_run_rate.parquet` **568 × 11** — per (SKU × channel × DC). Columns: n_clean_weeks, mean_weekly_qty, std_weekly_qty, total_qty, cv_weekly, first_week, last_week, is_low_data. Feeds F1 reorder math.
+  - **Null-DC filter**: dropped 1,762 rows / 482,213 base units (Shopify E1 / Weee W / Returns ZD / U / L) — documented in notebook cell 3. None belong in per-DC reorder math.
+  - **Unit conservation**: clean_dc_qty == weekly_qty == summary.total_qty (35,040,918). Assertions pass.
+  - **Low-data cells**: 70 / 568 (12.3%) at threshold `LOW_DATA_WEEKS=8`. Median n_clean_weeks = 101, mean = 75.2.
+  - **T-32206 spot check** (Tiger Balm Patch Warm): MM-NJ 15,348/wk (157 weeks), MM-LA 4,421 (157), MM-SF 4,153 (153); HF-NJ 952 (128), HF-LA 917 (32, `cv=0.80`), HF-SF 667 (101); AM lanes 95–278/wk. Channel mix matches expectation (Tiger Balm MM-dominant).
+  - **Channel coverage**: AM 206 / MM 195 / HF 97 non-low-data cells.
 - **Markdown detector recalibrated (step 05 + step 06 re-verified)** — switched from pooled SKU median @ factor 0.70 to per-(SKU × channel) median @ factor 0.85 with pooled-median fallback when a (SKU, channel) cell has < 5 non-promo positive-price rows. Motivation: pooled median was dragged down by HF shelf premiums (HF median ratio 0.864) which under-flagged MM markdowns and over-flagged HF. Factor bumped 0.70 → 0.85 calibrated from demand-response curve (qty_ratio jumps 1.2× → 2.6× between 10–20% below median, per SKU with MAD ~$0.24 on $3.36 median).
   - Row-level only — empirically confirmed no post-markdown demand trough (offsets +1..+6 identical to −3..−1 in zero-qty rate and mean_ratio), so no propagation needed.
   - New flagged totals: `is_markdown` **5,491 → 31,486 (2.3% → 13.3%)**; `is_clean_demand` **85.5% → 75.1%**.
