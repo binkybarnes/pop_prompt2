@@ -4,11 +4,12 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 07 clean-demand aggregation promoted to `src/demand.py`, next up is step 08)
+- (nothing actively in progress — step 08 elasticity fits promoted to `src/elasticity.py`, next up is step 09)
 
 ## Next
 
-- **Pipeline step 08 (elasticity / F2 curves)** — fit per-SKU × channel demand curves (log-log / isotonic / bucketed — pick per-SKU by holdout fit) using `clean_demand_weekly.parquet` as the scatter source. Output elasticity slope per (SKU, channel) which feeds back into F1's safety-stock sizing.
+- **Pipeline step 09 (reorder alerts / F1)** — combine `organic_run_rate.parquet` + `elasticity.parquet` + current inventory + lead time → per-SKU × DC reorder alerts. Core math: `reorder_point = organic_run_rate × lead_time_weeks + safety_stock` where `safety_stock = (base_weeks + k·|elasticity_slope|) × organic_run_rate`. Output `reorder_alerts.xlsx` for buyers. Decide base_weeks and k at implementation time.
+- **Revisit elasticity model (after step 09)** — v1 is log-log only (constant-elasticity assumption). If showcase scatters show kinked demand curves (flat above some price, steep below), add isotonic regression as a per-SKU fallback. See feature_tree_v2 decision #5.
 - **Revisit feature scope (F1/F2) after pipeline** — stockout-caused demand loss is <0.2% of rows even at `LOST_DEMAND_COVER_K=10` (K=1 -> 55 rows, K=10 -> 440). That's a real finding: POP's demand is mostly promo/markdown-polluted (14.7%), not stockout-polluted. The F1 forecaster's main cleaning job is promos, not stockout imputation. Worth discussing whether that shifts F1/F2 framing after all steps are wired.
 
 ## Blocked
@@ -21,6 +22,15 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- `src/elasticity.py` — promoted elasticity-fit logic from `08_elasticity_curves.ipynb`. Public API: `fit_elasticity(sales, *, min_obs=20, min_log_price_iqr=0.1) -> DataFrame` plus `filter_eligible(sales)`. Notebook re-executed end-to-end after refactor; outputs identical (207 × 11, 135 fitted, T-32206 MM slope −5.07).
+- **Pipeline step 08 (elasticity curves)** — verified end-to-end. Log-log `log(qty) = α + β·log(price)` fit per (SKU × channel) over non-stockout rows with `Unit_Price_adj > 0 & QTY_BASE > 0`.
+  - Output: `elasticity.parquet` **207 × 11**. Columns: ITEMNMBR, SALESCHANNEL, n_obs, log_price_iqr, median_price, slope, intercept, r_squared, is_low_data, method, predicted_qty_at_median.
+  - **135 fitted / 72 low-data** (35% gated by either `n_obs < 20` or `log_price_iqr < 0.1` — the latter fires when a channel sells a SKU at near-constant price, e.g. F-04111 AM where price barely varies).
+  - **124 / 135 negative slopes** — expected direction for normal goods.
+  - **Slope-by-channel** (median): AM −3.96 (most elastic) · MM −3.33 · HF −1.31 (most inelastic). Matches feature_tree_v2 intuition that HF is distributor-mediated and less price-responsive.
+  - **Showcase SKUs**: T-32206 MM β=-5.07 R²=0.37 n=17,771; F-04111 MM β=-4.26 R²=0.40 n=5,078; T-31510 MM β=-5.99 R²=0.34 n=17,833; T-22010 MM β=-4.80 R²=0.38 n=12,822.
+  - **Figure**: 4×3 showcase scatter grid (blue=clean / orange=promo / red=markdown / grey=stockout) with fitted curves saved to `pipeline/artifacts/figures/elasticity_showcase.png`.
+  - **Scope cut**: v1 is log-log only. Isotonic + bucketed-mean methods from feature_tree_v2 decision #5 deferred until we see whether showcase scatters show kinked curves that log-log under-fits.
 - `src/demand.py` — promoted clean-demand aggregation from `07_clean_demand.ipynb`. Public API: `build_clean_demand(sales, *, low_data_weeks=8) -> (weekly, summary, meta)` plus `aggregate_weekly`, `compute_organic_run_rate`. Notebook re-executed end-to-end after refactor; outputs identical (weekly 35,103 × 8, summary 568 × 11, 70 low-data cells).
 - **Pipeline step 07 (clean demand)** — verified end-to-end. Filters `is_clean_demand == True & SALESCHANNEL notna & DC notna`, aggregates to weekly + summary.
   - `clean_demand_weekly.parquet` **35,103 × 8** — per (SKU × channel × DC × week_start). Columns: qty_base, revenue, n_txn, unit_price_wt (QTY_BASE-weighted mean unit price). Feeds F2 scatter/trend-stack.
