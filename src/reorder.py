@@ -155,8 +155,9 @@ def compute_lead_time_from_po(
     dc_map: dict,
     *,
     min_pos: int = MIN_POS_FOR_LEAD,
-) -> pd.DataFrame:
-    """Median actual lead time per (ITEMNMBR, DC) from PO receipt history.
+    min_pos_pool: int = 2,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Median actual lead time from PO receipt history.
 
     The item-master ``Lead Time`` field is freeform and sometimes wildly
     wrong (e.g. T-32206 says "Half a year or more" — parses to 26 wk — but
@@ -166,11 +167,14 @@ def compute_lead_time_from_po(
 
     Filtering: drop rows missing either date, drop QTY Shipped ≤ 0 (those
     are cancelled or header-only lines), drop nonsensical lead
-    (< 0 or > 400 days). ``min_pos`` gates the return — lanes with fewer
-    PO receipts are dropped here; the caller decides the fallback.
+    (< 0 or > 400 days).
 
-    Returns one row per (ITEMNMBR, DC) with:
-      lead_time_days_med, lead_time_wk_po, n_pos.
+    Two granularities returned — caller chooses precedence:
+      per_dc  : per (ITEMNMBR, DC), requires ≥ ``min_pos`` receipts.
+      per_sku : per ITEMNMBR pooled across DCs, requires ≥ ``min_pos_pool``.
+                For imported CPG the lead is factory + ocean + port — DC is
+                a small-delta variable, so pooling is defensible when the
+                per-DC sample is too thin (early-backtest weeks).
     """
     p = po.copy()
     p['PO Date']      = pd.to_datetime(p['PO Date'])
@@ -182,15 +186,27 @@ def compute_lead_time_from_po(
     p['DC'] = p['Location Code'].astype(str).map(dc_map)
     p = p.dropna(subset=['DC'])
 
-    out = (
+    per_dc = (
         p.groupby(['Item Number', 'DC'])
          .agg(lead_time_days_med=('lead_days', 'median'),
               n_pos=('PO Number', 'nunique'))
          .reset_index()
          .rename(columns={'Item Number': 'ITEMNMBR'})
     )
-    out['lead_time_wk_po'] = out['lead_time_days_med'] / 7.0
-    return out[out['n_pos'] >= min_pos].reset_index(drop=True)
+    per_dc['lead_time_wk_po'] = per_dc['lead_time_days_med'] / 7.0
+    per_dc = per_dc[per_dc['n_pos'] >= min_pos].reset_index(drop=True)
+
+    per_sku = (
+        p.groupby('Item Number')
+         .agg(lead_time_days_pool_med=('lead_days', 'median'),
+              n_pos_pool=('PO Number', 'nunique'))
+         .reset_index()
+         .rename(columns={'Item Number': 'ITEMNMBR'})
+    )
+    per_sku['lead_time_wk_pool'] = per_sku['lead_time_days_pool_med'] / 7.0
+    per_sku = per_sku[per_sku['n_pos_pool'] >= min_pos_pool].reset_index(drop=True)
+
+    return per_dc, per_sku
 
 
 def prepare_item_master(im: pd.DataFrame) -> pd.DataFrame:
@@ -246,11 +262,14 @@ def build_reorder_alerts(
     ``medium`` for two of three; ``low`` otherwise.
 
     Lead time precedence (``lead_time_source``):
-      - ``po_history`` : median ``Receipt Date − PO Date`` when the lane
-                         has ≥ ``min_pos_for_lead`` PO receipts. Most
-                         accurate — reflects real vendor + route + freight.
+      - ``po_history`` : median ``Receipt Date − PO Date`` on this (SKU,DC)
+                         when the lane has ≥ ``min_pos_for_lead`` receipts.
+                         Most accurate — reflects real vendor + route.
+      - ``po_pooled``  : SKU-level PO-history median, pooled across DCs.
+                         Used when per-DC sample is thin (early backtest
+                         weeks). Defensible because factory + ocean dominate.
       - ``parsed``     : parsed from item-master ``Lead Time`` string.
-                         Used when PO history is thin / missing.
+                         Used when no usable PO history.
       - ``default``    : ``default_lead_weeks``. Used only as last resort.
 
     Required inputs:
@@ -279,22 +298,29 @@ def build_reorder_alerts(
     rec = rec.merge(im_p, on='ITEMNMBR', how='left')
 
     if po is not None and dc_map is not None:
-        po_lead = compute_lead_time_from_po(po, dc_map, min_pos=min_pos_for_lead)
-        rec = rec.merge(po_lead[['ITEMNMBR', 'DC', 'lead_time_wk_po', 'n_pos']],
+        po_dc, po_sku = compute_lead_time_from_po(po, dc_map, min_pos=min_pos_for_lead)
+        rec = rec.merge(po_dc[['ITEMNMBR', 'DC', 'lead_time_wk_po', 'n_pos']],
                         on=['ITEMNMBR', 'DC'], how='left')
+        rec = rec.merge(po_sku[['ITEMNMBR', 'lead_time_wk_pool', 'n_pos_pool']],
+                        on='ITEMNMBR', how='left')
     else:
         rec['lead_time_wk_po'] = np.nan
+        rec['lead_time_wk_pool'] = np.nan
         rec['n_pos'] = 0
+        rec['n_pos_pool'] = 0
 
-    lead_from_po = rec['lead_time_wk_po'].notna()
-    lead_from_parsed = rec['lead_parsed'].fillna(False) & ~lead_from_po
+    lead_from_po     = rec['lead_time_wk_po'].notna()
+    lead_from_pool   = rec['lead_time_wk_pool'].notna() & ~lead_from_po
+    lead_from_parsed = rec['lead_parsed'].fillna(False) & ~lead_from_po & ~lead_from_pool
     rec['lead_time_source'] = np.select(
-        [lead_from_po, lead_from_parsed],
-        ['po_history', 'parsed'],
+        [lead_from_po, lead_from_pool, lead_from_parsed],
+        ['po_history', 'po_pooled', 'parsed'],
         default='default',
     )
-    rec['lead_time_wk'] = np.where(
-        lead_from_po, rec['lead_time_wk_po'], rec['lead_time_wk'],
+    rec['lead_time_wk'] = np.select(
+        [lead_from_po, lead_from_pool],
+        [rec['lead_time_wk_po'], rec['lead_time_wk_pool']],
+        default=rec['lead_time_wk'],
     )
     rec['lead_time_wk'] = rec['lead_time_wk'].fillna(default_lead_weeks)
     rec['lead_known'] = rec['lead_time_source'] != 'default'
@@ -339,10 +365,13 @@ def build_reorder_alerts(
         default='low',
     )
 
+    rec['n_pos'] = rec['n_pos'].fillna(0).astype(int)
+    rec['n_pos_pool'] = rec['n_pos_pool'].fillna(0).astype(int)
+
     ordered_cols = [
         'ITEMNMBR', 'Description', 'DC', 'vendor', 'country',
         'run_rate_wk', 'std_wk', 'cv', 'n_clean_weeks',
-        'lead_time_wk', 'lead_time_source', 'n_pos', 'Lead Time',
+        'lead_time_wk', 'lead_time_source', 'n_pos', 'n_pos_pool', 'Lead Time',
         'available_now', 'on_hand_now',
         'weeks_of_cover', 'reorder_point', 'safety_stock',
         'reorder_flag', 'suggested_qty', 'suggested_cases',
