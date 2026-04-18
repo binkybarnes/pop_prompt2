@@ -1,10 +1,14 @@
 # Data files
 data/
 *.zip
+*.rar
 *.csv
 *.xlsx
 *.XLSX
 *.pdf
+
+# Intermediate pipeline artifacts (regenerable via notebooks)
+pipeline/artifacts/
 
 # Jupyter
 .ipynb_checkpoints/
