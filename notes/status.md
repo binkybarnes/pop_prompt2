@@ -4,11 +4,11 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## In progress
 
-- (nothing actively in progress — step 05 promoted to `src/tagging.py`, next up is step 06)
+- (nothing actively in progress — step 06 promoted to `src/channel.py`, next up is step 07)
 
 ## Next
 
-- **Pipeline step 06 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Import `tag_transactions` from `src.tagging`.
+- **Pipeline step 07 (clean demand)** — produce `cleaned_demand.parquet` filtered to `is_clean_demand == True`, aggregated to the level F1/F2 need (per-SKU per-week or per-customer-week). Upstream is `sales_tagged_channel.parquet`.
 - **Revisit feature scope (F1/F2) after pipeline** — stockout-caused demand loss is <0.2% of rows even at `LOST_DEMAND_COVER_K=10` (K=1 -> 55 rows, K=10 -> 440). That's a real finding: POP's demand is mostly promo/markdown-polluted (14.7%), not stockout-polluted. The F1 forecaster's main cleaning job is promos, not stockout imputation. Worth discussing whether that shifts F1/F2 framing after all steps are wired.
 
 ## Blocked
@@ -21,6 +21,13 @@ Rolling log of what's in progress, blocked, and next. Keep it short — update a
 
 ## Recently completed
 
+- `src/channel.py` — promoted channel-attachment logic from `06_channel.ipynb`. Public API: `attach_channel(sales, slprsn_key) -> sales_with_channel` (thin wrapper around the left-merge on SLPRSNID). Notebook re-executed end-to-end after refactor; outputs identical (236,818 × 43, 4 null SALESCHANNEL rows matching 4 null SLPRSNID).
+- **Pipeline step 06 (channel mapping)** — verified end-to-end. All 236,818 rows preserved, 2 columns added (`SALESCHANNEL`, `SALESCHANNEL_DESC`). 100% coverage minus 4 rows with null SLPRSNID.
+  - Channel mix: **MM** (American Mainstream) 113,226 / **AM** (Asian Ethnic) 107,399 / **HF** (Health Food) 16,189.
+  - Channel × DC: MM concentrated in NJ (63,768), AM spreads across all three, HF heavily NJ (9,795).
+  - Channel × brand sanity check (expected): Tiger Balm is MM-dominant (61,803 vs AM 6,484); am gsg and Ferrero are AM-dominant; kjeldsens/kwan loong/totole are AM-only. POP Tea and ginger chew span channels.
+  - **Clean-demand share by channel**: AM 97.2% / MM 78.2% / HF 57.2%. HF is the most polluted channel — worth flagging when segmenting the F1 forecaster (may want per-channel markdown/promo thresholds).
+  - Artifact: `sales_tagged_channel.parquet` (236,818 × 43).
 - `src/tagging.py` — promoted tagging logic from `05_tag_transactions.ipynb`. Public API: `tag_transactions(sales, promo_cal, inv_weekly, *, markdown_factor, lost_demand_cover_k, lost_demand_order_f, lost_demand_min_n) -> (sales_tagged, meta)`. Helpers: `tag_promo`, `tag_markdown`, `tag_stockout_week`, `tag_lost_demand_week`. Notebook re-executed end-to-end after refactor; outputs identical (440 TRUE at K=10, is_clean_demand 85.4%, shape 236,818 × 41).
 - **Pipeline step 05 (tag transactions)** — verified end-to-end. All 236,818 sales rows preserved, 5 flags added (`is_promo`, `is_markdown`, `is_stockout_week`, `is_lost_demand_week`, `is_clean_demand`).
   - `is_promo` = exact (CUSTNMBR, brand, sale_ym) match against `promo_cal`. **12.4%** of rows (29,421). Brand mix: tiger balm 22k / ginger chew 7.3k / am gsg 86. Sell-in-window refinement deferred.
