@@ -4,7 +4,7 @@ Drives F1. Given weekly clean demand, an inventory snapshot, and item-master
 metadata, produce one row per (SKU × DC) with:
 
     reorder_point  = run_rate_wk × lead_time_wk + safety_stock
-    safety_stock   = Z × std_wk × sqrt(lead_time_wk)            (95% service)
+    safety_stock   = Z × std_wk × sqrt(lead_time_wk)            (99% service)
     suggested_qty  = max(0, reorder_point + forward_cover × run_rate − avail)
                      rounded up to case pack
     reorder_flag   = available_now < reorder_point
@@ -34,8 +34,16 @@ import re
 import numpy as np
 import pandas as pd
 
-SERVICE_LEVEL_Z = 1.65        # 95% service level under normal demand
-FORWARD_COVER_WEEKS = 4       # weeks of post-arrival coverage to order up to
+SERVICE_LEVEL_Z = 2.33        # 99% service level — POP overstocks anyway,
+                              # so we'd rather err on "never run out" than
+                              # "never hold extra" (moved up from 1.65 after
+                              # backtest showed demand bursts outrun safety
+                              # stock at 95%)
+FORWARD_COVER_WEEKS = 6       # weeks of post-arrival coverage to order up to.
+                              # Bumped 4→6 after backtest: larger, less
+                              # frequent orders keep on_hand above zero
+                              # through lead-time gaps (the real failure mode
+                              # is mid-cycle bursts, not order sizing)
 DEFAULT_LEAD_WEEKS = 13       # 3 months — matches modal Lead Time
 MONTHS_TO_WEEKS = 4.33        # 365.25 / 12 / 7
 MIN_WEEKS_FOR_HIGH = 8        # same low-data threshold as organic_run_rate
