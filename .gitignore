@@ -16,6 +16,10 @@ pipeline/artifacts/
 __pycache__/
 *.pyc
 
+# Installers
+Miniforge3-*.sh
+*.sh.bak
+
 # Python env
 .venv/
 venv/
