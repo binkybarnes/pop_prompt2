@@ -18,10 +18,13 @@ POP Problem 1 Solution
 │   │   │       - handles missing fields, date parsing
 │   │   │       demo: "we loaded 3 years × 1000 SKUs cleanly"
 │   │   │
-│   │   ├── F1. Promo/markdown separation                   [Layer 2]
+│   │   ├── F1. Promo/markdown separation  ✅ DONE           [Layer 2]
 │   │   │    └─ Use TPR cause codes from chargebacks to flag promo weeks per SKU per customer
 │   │   │       - split each SKU's sales into "organic" vs "promo"
 │   │   │       - outputs two demand numbers per SKU
+│   │   │       - implemented in exploration_f1.ipynb cells 11–12:
+│   │   │         `promo_cal` (Customer×Brand×YearMonth) + `tag_sales()` adds
+│   │   │         `is_promo`, `is_markdown`, `is_clean_demand` columns
 │   │   │       demo: SKU X reports $50k revenue → really $25k organic + $25k promo
 │   │   │
 │   │   ├── F2. Lost-sales / suppressed-demand detector     [Layer 2]
@@ -66,10 +69,21 @@ POP Problem 1 Solution
 │   │   │       - for Asian Market SKUs, adjust run rate around these dates
 │   │   │       demo: show spike correctly anticipated for 2025 Lunar NY
 │   │   │
-│   │   └── F9. Stale hold-PO detector                      [Layer 2]
-│   │        └─ Flag allocated-inventory records older than N days
-│   │           - treat that inventory as likely-available in reorder math
-│   │           demo: "$XXk of inventory is held on stale POs; we surface it"
+│   │   ├── F9. Stale hold-PO detector                      [Layer 2]
+│   │   │    └─ Flag allocated-inventory records older than N days
+│   │   │       - treat that inventory as likely-available in reorder math
+│   │   │       demo: "$XXk of inventory is held on stale POs; we surface it"
+│   │   │
+│   │   └── F13. Price–demand curve per SKU                  [Layer 2 / 5]
+│   │        └─ Per SKU, plot unit price (X) vs units sold (Y) across all invoices;
+│   │           fit/interpolate a curve (e.g. isotonic or log-log regression)
+│   │           - visually separates organic demand at full price from promo-lift
+│   │             spikes at lower prices — richer than F1's binary flag
+│   │           - read "organic baseline" off the curve at the SKU's list price;
+│   │             cross-check vs F1's clean-demand run rate
+│   │           - becomes a judge-friendly visual proof that F1 is working
+│   │           demo: Tiger Balm Patch — at $3.50 curve says ~400 cases/mo, at
+│   │             $2.00 promo spikes to ~900; reorder math uses the $3.50 point
 │   │
 │   ├── [COULD] Stretch — only if core + differentiators are solid
 │   │   │
