@@ -1,25 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import type { LaneFile, LaneCounterfactualFile } from '@/lib/types';
-import { ChartTab } from './ChartTab';
+import type { LaneFile } from '@/lib/types';
+import { OperationalChart } from './OperationalChart';
+import { LaneChartPanel } from './LaneChartPanel';
 import { BacktestTab } from './BacktestTab';
-import { StrategyTab } from './StrategyTab';
 
-type TabKey = 'historical chart' | 'backtest stats' | 'strategy comparison';
+type TabKey = 'prediction' | 'backtest';
 
-export function LaneTabs({
-  lane,
-  counterfactual,
-}: {
-  lane: LaneFile;
-  counterfactual: LaneCounterfactualFile;
-}) {
-  const [active, setActive] = useState<TabKey>('historical chart');
+export function LaneTabs({ lane }: { lane: LaneFile }) {
+  const [active, setActive] = useState<TabKey>('prediction');
   return (
     <div className="space-y-3">
       <div className="flex gap-1 border-b border-border">
-        {(['historical chart', 'backtest stats', 'strategy comparison'] as TabKey[]).map((k) => (
+        {(['prediction', 'backtest'] as TabKey[]).map((k) => (
           <button
             key={k}
             onClick={() => setActive(k)}
@@ -34,9 +28,13 @@ export function LaneTabs({
           </button>
         ))}
       </div>
-      {active === 'historical chart' && <ChartTab lane={lane} counterfactual={counterfactual} />}
-      {active === 'backtest stats' && <BacktestTab lane={lane} />}
-      {active === 'strategy comparison' && <StrategyTab lane={lane} counterfactual={counterfactual} />}
+      {active === 'prediction' && <OperationalChart lane={lane} />}
+      {active === 'backtest' && (
+        <div className="space-y-4">
+          <LaneChartPanel lane={lane} />
+          <BacktestTab lane={lane} />
+        </div>
+      )}
     </div>
   );
 }

@@ -2,7 +2,6 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import {
   loadLane,
-  loadLaneCounterfactual,
   loadLaneDemand,
   loadLanesIndex,
   listLaneSlugs,
@@ -23,12 +22,11 @@ export default async function LanePage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  let lane, demand, cf;
+  let lane, demand;
   try {
-    [lane, demand, cf] = await Promise.all([
+    [lane, demand] = await Promise.all([
       loadLane(slug),
       loadLaneDemand(slug),
-      loadLaneCounterfactual(slug),
     ]);
   } catch {
     notFound();
@@ -50,7 +48,7 @@ export default async function LanePage({
       <LaneHeader lane={lane} />
       <div className="flex gap-4">
         <div className="flex-1 min-w-0">
-          <LaneTabs lane={lane} counterfactual={cf} />
+          <LaneTabs lane={lane} />
         </div>
         <SidePanel lane={lane} laneSummary={laneSummary} />
       </div>

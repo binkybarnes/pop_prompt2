@@ -1,7 +1,7 @@
 export type DC = 'SF' | 'NJ' | 'LA';
 export type Confidence = 'high' | 'medium' | 'low';
 export type Channel = 'MM' | 'AM' | 'HF';
-export type Strategy = 'mean' | 'p90';
+export type Regime = 'declining' | 'growing' | 'stable';
 
 export interface AlertRow {
   ITEMNMBR: string;
@@ -42,14 +42,21 @@ export interface LaneIndexRow {
 export interface LaneSeriesRow {
   week_start: string;
   on_hand_est: number | null;
-  reorder_point_mean: number | null;
-  reorder_point_p90: number | null;
-  run_rate_mean: number | null;
-  run_rate_p90: number | null;
-  alert_fired_mean: boolean;
-  alert_fired_p90: boolean;
+  on_hand_sim: number | null;
+  reorder_point: number | null;
+  run_rate_wk: number | null;
+  regime: Regime | null;
+  alert_fired: boolean;
+  po_ordered: boolean;
+  po_received: boolean;
   fresh_stockout: boolean;
   weeks_until_stockout: number | null;
+}
+
+export interface SimulatedPO {
+  order_week: string;
+  arrival_week: string;
+  qty: number;
 }
 
 export interface LaneToday {
@@ -67,6 +74,8 @@ export interface LaneToday {
   safety_stock: number | null;
   std_wk: number | null;
   n_clean_weeks: number | null;
+  regime?: Regime | null;
+  trend_ratio?: number | null;
 }
 
 export interface LaneMetadata {
@@ -80,6 +89,7 @@ export interface LaneFile {
   sku: string;
   dc: DC;
   series: LaneSeriesRow[];
+  simulated_pos: SimulatedPO[];
   today: LaneToday;
   metadata: LaneMetadata;
 }
@@ -105,40 +115,12 @@ export interface LaneDemandFile {
   top_customers: DemandCustomer[];
 }
 
-export interface CounterfactualWeek {
-  week_start: string;
-  actual: number | null;
-  mean_followed: number | null;
-  p90_followed: number | null;
-}
-
-export interface SimulatedPO {
-  strategy: Strategy;
-  order_week: string;
-  arrival_week: string;
-  qty: number;
-}
-
-export interface NarrativeTaglines {
-  actual_only: string;
-  plus_mean: string;
-  plus_p90: string;
-}
-
-export interface LaneCounterfactualFile {
-  sku: string;
-  dc: DC;
-  series: CounterfactualWeek[];
-  simulated_pos: SimulatedPO[];
-  trough_delta: { actual: number | null; mean: number | null; p90: number | null };
-  narrative: NarrativeTaglines | null;
-}
-
 export interface BacktestSummary {
-  strategies: Array<Record<string, unknown>>;
-  total_lanes: number;
-  total_alerts_today: number;
-  total_alerts_high_conf: number;
-  total_alerts_med_conf: number;
-  total_alerts_low_conf: number;
+  method?: string;
+  total_lanes?: number;
+  total_alerts_today?: number;
+  total_alerts_high_conf?: number;
+  total_alerts_med_conf?: number;
+  total_alerts_low_conf?: number;
+  [key: string]: unknown;
 }

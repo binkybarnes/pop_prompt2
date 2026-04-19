@@ -3,7 +3,6 @@ import path from 'node:path';
 import type {
   AlertRow,
   BacktestSummary,
-  LaneCounterfactualFile,
   LaneDemandFile,
   LaneFile,
   LaneIndexRow,
@@ -35,12 +34,6 @@ export async function loadLane(slug: string): Promise<LaneFile> {
 
 export async function loadLaneDemand(slug: string): Promise<LaneDemandFile> {
   return readJson<LaneDemandFile>(`lane/${slug}_demand.json`);
-}
-
-export async function loadLaneCounterfactual(
-  slug: string
-): Promise<LaneCounterfactualFile> {
-  return readJson<LaneCounterfactualFile>(`lane/${slug}_counterfactual.json`);
 }
 
 export async function listLaneSlugs(): Promise<string[]> {
