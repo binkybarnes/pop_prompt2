@@ -13,6 +13,8 @@ import {
 import type { LaneDemandFile } from '@/lib/types';
 import { fmtInt, fmtPct } from '@/lib/format';
 
+import { useState, useMemo } from 'react';
+
 const CHANNEL_COLORS = {
   MM: '#1b2a4a',
   AM: '#0891b2',
@@ -20,23 +22,62 @@ const CHANNEL_COLORS = {
 };
 
 export function DemandBreakdown({ demand }: { demand: LaneDemandFile }) {
+  const [scope, setScope] = useState<'3M' | '6M' | '1Y' | '2Y' | 'Max'>('Max');
+
+  const filteredData = useMemo(() => {
+    if (scope === 'Max') return demand.weekly;
+    const scopes = {
+      '3M': 13,
+      '6M': 26,
+      '1Y': 52,
+      '2Y': 104
+    };
+    const numWeeks = scopes[scope];
+    return demand.weekly.slice(-numWeeks);
+  }, [demand.weekly, scope]);
+
   if (demand.weekly.length === 0) return null;
+  
+  const options: ('3M' | '6M' | '1Y' | '2Y' | 'Max')[] = ['3M', '6M', '1Y', '2Y', 'Max'];
+
   return (
-    <section className="space-y-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wider text-muted">
-        Demand breakdown
-      </h2>
+    <section className="space-y-4">
+      <div className="flex flex-col gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted">
+          Demand breakdown
+        </h2>
+        
+        {/* Google Finance style tabs */}
+        <div className="flex items-center w-full border-b border-border/50">
+          {options.map((s) => {
+            const isActive = scope === s;
+            return (
+              <button
+                key={s}
+                onClick={() => setScope(s)}
+                className={`flex-1 pb-2 text-sm font-medium transition-colors border-b-2 ${
+                  isActive 
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400' 
+                    : 'border-transparent text-muted hover:text-fg'
+                }`}
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <div className="rounded-md border border-border bg-surface p-3">
-        <ResponsiveContainer width="100%" height={180}>
-          <AreaChart data={demand.weekly} margin={{ top: 8, right: 12, left: 12, bottom: 8 }}>
+        <ResponsiveContainer width="100%" height={280}>
+          <AreaChart data={filteredData} margin={{ top: 8, right: 12, left: 12, bottom: 8 }}>
             <CartesianGrid stroke="#e5e7eb" strokeDasharray="2 4" />
             <XAxis dataKey="week_start" tick={{ fontSize: 11, fill: '#6b7280' }} minTickGap={32} />
             <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} tickFormatter={(v) => fmtInt(v as number)} width={72} />
             <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v) => fmtInt(Number(v))} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Area type="monotone" dataKey="MM" stackId="1" fill={CHANNEL_COLORS.MM} stroke={CHANNEL_COLORS.MM} name="MM" />
-            <Area type="monotone" dataKey="AM" stackId="1" fill={CHANNEL_COLORS.AM} stroke={CHANNEL_COLORS.AM} name="AM" />
-            <Area type="monotone" dataKey="HF" stackId="1" fill={CHANNEL_COLORS.HF} stroke={CHANNEL_COLORS.HF} name="HF" />
+            <Area type="linear" dataKey="MM" stackId="1" fill={CHANNEL_COLORS.MM} stroke={CHANNEL_COLORS.MM} name="MM" animationDuration={300} />
+            <Area type="linear" dataKey="AM" stackId="1" fill={CHANNEL_COLORS.AM} stroke={CHANNEL_COLORS.AM} name="AM" animationDuration={300} />
+            <Area type="linear" dataKey="HF" stackId="1" fill={CHANNEL_COLORS.HF} stroke={CHANNEL_COLORS.HF} name="HF" animationDuration={300} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
