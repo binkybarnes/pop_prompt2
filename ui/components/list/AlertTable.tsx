@@ -6,7 +6,7 @@ import type { AlertRow } from '@/lib/types';
 import { fmtCases, fmtInt, fmtWeeks, slugOf } from '@/lib/format';
 import { Sparkline } from './Sparkline';
 
-type SortKey = 'confidence' | 'weeks_of_cover' | 'suggested_qty' | 'ITEMNMBR' | 'DC';
+type SortKey = 'confidence' | 'weeks_of_cover' | 'suggested_qty' | 'ITEMNMBR' | 'DC' | 'on_hand_now';
 
 const CONF_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
@@ -63,6 +63,9 @@ export function AlertTable({
       } else if (sortKey === 'DC') {
         va = a.DC;
         vb = b.DC;
+      } else if (sortKey === 'on_hand_now') {
+        va = a.on_hand_now ?? 0;
+        vb = b.on_hand_now ?? 0;
       }
       if (va < vb) return sortDir === 'asc' ? -1 : 1;
       if (va > vb) return sortDir === 'asc' ? 1 : -1;
@@ -104,7 +107,7 @@ export function AlertTable({
             <Th onClick={() => onSort('ITEMNMBR')}>SKU</Th>
             <th className="px-3 py-2">Product</th>
             <Th onClick={() => onSort('DC')}>DC</Th>
-            <th className="px-3 py-2 text-right">On hand</th>
+            <Th onClick={() => onSort('on_hand_now')} align="right">On hand</Th>
             <Th onClick={() => onSort('weeks_of_cover')} align="right">Cover</Th>
             <Th onClick={() => onSort('suggested_qty')} align="right">Suggest</Th>
             <Th onClick={() => onSort('confidence')}>Conf</Th>

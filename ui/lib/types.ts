@@ -2,10 +2,12 @@ export type DC = 'SF' | 'NJ' | 'LA';
 export type Confidence = 'high' | 'medium' | 'low';
 export type Channel = 'MM' | 'AM' | 'HF';
 export type Regime = 'declining' | 'growing' | 'stable';
+export type LaneStatus = 'active' | 'stocked_out' | 'inactive' | 'discontinued' | 'anomaly';
 
 export interface AlertRow {
   ITEMNMBR: string;
   DC: DC;
+  status?: LaneStatus;
   inv_description: string | null;
   available_now: number | null;
   on_hand_now: number | null;
@@ -37,6 +39,7 @@ export interface LaneIndexRow {
   n_fresh: number;
   today_flag: boolean;
   today_confidence: Confidence;
+  status?: LaneStatus;
 }
 
 export interface LaneSeriesRow {

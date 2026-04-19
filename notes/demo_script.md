@@ -3,6 +3,7 @@
 **Elevator pitch (one sentence):** We replaced a buyer reading 800 SKU rows in Excel with a dashboard that tells you exactly what to order, how much, and shows you the math behind every recommendation — including where it would have been wrong.
 
 **Setup before you start:**
+
 - Open the app to `/alerts`
 - Have T-32206-SF (Tiger Balm Patch Small, SF DC) ready to click into
 - Know your one real number: POP holds ~$2M in excess inventory across lanes the model says are fine to hold
@@ -38,11 +39,11 @@
 **"Under the Hood" (The 3 Crucial Numbers):**
 If a stakeholder asks exactly how the model works, point to `src/reorder.py` and explain the 3 exact numbers that drive the prediction:
 
-1. **The Run Rate:** We use a dynamic **Trend-Aware Regime Detector**. We compute a `Ratio = (Recent 26-wk Mean) / (Full History Mean)`. 
+1. **The Run Rate:** We use a dynamic **Trend-Aware Regime Detector**. We compute a `Ratio = (Recent 26-wk Mean) / (Full History Mean)`.
    - If `Ratio < 0.70` (declining) or `Ratio > 1.30` (growing), `Run Rate = Recent 26-wk Mean`.
    - Otherwise, `Run Rate = Full History Mean`.
    - *Why this matters:* It drops historical baggage instantly when trends shift, preventing over-ordering on dead stock or stockouts on new best-sellers.
-2. **The Safety Stock:** We use a rigorous dual-variance formula: `SS = Z × √(LT·σ_d² + d²·σ_LT²)`. 
+2. **The Safety Stock:** We use a rigorous dual-variance formula: `SS = Z × √(LT·σ_d² + d²·σ_LT²)`.
    - It captures BOTH demand volatility (`σ_d`) and lead-time volatility (`σ_LT`). Single-source formulas fail when Chinese POs vary between 3 to 9 weeks in transit.
    - The `Z` score is tiered by ABC/XYZ classes. Best-sellers (AX) get `Z=1.96` (97.5% service level) to protect revenue, while slow unreliables (CZ) get squeezed down to `Z=1.04` to eliminate wasted working capital.
 3. **The Reorder Point:** The final trigger is simply: `(Run Rate × Lead Time in weeks) + Safety Stock`. Once your active `on_hand` drops below this threshold, the red alert fires.
@@ -110,11 +111,13 @@ If a stakeholder asks exactly how the model works, point to `src/reorder.py` and
 ## Scene 6 — The Ask / So What
 
 **What this replaces:**
+
 - Buyer manually scanning 233 rows in GP every week: ~3–4 hours
 - Zero lead-of-warning (buyer sees stockout when it happens, not 12 weeks before)
 - No audit trail for why an order was placed or skipped
 
 **What this adds:**
+
 - 12-week median lead-of-warning (time to actually call the vendor and negotiate)
 - Per-lane confidence so buyers know when to trust vs. verify
 - Counterfactual "what would have happened" — a built-in check against buyer intuition
@@ -124,27 +127,27 @@ If a stakeholder asks exactly how the model works, point to `src/reorder.py` and
 
 ## Q&A Playbook
 
-| Question | Answer |
-|---|---|
-| "How do you know your demand numbers aren't inflated by promos?" | "We stripped promo-inflated weeks before calibrating. A TPR (Temporary Price Reduction) sale does not count toward the baseline run rate. Clean demand is a separate column from total outflow." |
-| "What if we have a new SKU with no history?" | "Low or no confidence. The model says so. You order based on your vendor MOQ and buyer experience — same as today." |
-| "Does this account for seasonality?" | "Run rate recalculates on a rolling trailing window, so it does pick up seasonal patterns implicitly. Explicit lunar/seasonal overlay is planned but not in this build." |
-| "What if inventory gets counted wrong in a cycle count?" | "The model reads the GP snapshot. A recount that gets entered into GP will update the next week's on-hand number automatically. One bad snapshot = one bad alert week." |
-| "Why is suggested quantity so high for lane X?" | "Check the lead time source. If it says 'default' (13 weeks), the formula is sizing for a longer lead time than may be real. Confirm actual lead time with the vendor and re-run." |
-| "Can we trust the backtest? You could have picked favorable lanes." | "The backtest ran on all 116 high-confidence lanes. We can show the full 116-row risk table. 103 stayed above zero, 13 dipped. The 13 are documented with root cause." |
+| Question                                                            | Answer                                                                                                                                                                                           |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "How do you know your demand numbers aren't inflated by promos?"    | "We stripped promo-inflated weeks before calibrating. A TPR (Temporary Price Reduction) sale does not count toward the baseline run rate. Clean demand is a separate column from total outflow." |
+| "What if we have a new SKU with no history?"                        | "Low or no confidence. The model says so. You order based on your vendor MOQ and buyer experience — same as today."                                                                             |
+| "Does this account for seasonality?"                                | "Run rate recalculates on a rolling trailing window, so it does pick up seasonal patterns implicitly. Explicit lunar/seasonal overlay is planned but not in this build."                         |
+| "What if inventory gets counted wrong in a cycle count?"            | "The model reads the GP snapshot. A recount that gets entered into GP will update the next week's on-hand number automatically. One bad snapshot = one bad alert week."                          |
+| "Why is suggested quantity so high for lane X?"                     | "Check the lead time source. If it says 'default' (13 weeks), the formula is sizing for a longer lead time than may be real. Confirm actual lead time with the vendor and re-run."               |
+| "Can we trust the backtest? You could have picked favorable lanes." | "The backtest ran on all 116 high-confidence lanes. We can show the full 116-row risk table. 103 stayed above zero, 13 dipped. The 13 are documented with root cause."                           |
 
 ---
 
 ## Timing Guide
 
-| Segment | Time |
-|---|---|
-| Elevator pitch + list view | 2 min |
+| Segment                        | Time  |
+| ------------------------------ | ----- |
+| Elevator pitch + list view     | 2 min |
 | T-32206-SF chart + trust story | 3 min |
-| Counterfactual / Strategy tab | 2 min |
-| Honest failure (F-04001-NJ) | 1 min |
-| Confidence tiers | 1 min |
-| The ask | 1 min |
-| Q&A | open |
+| Counterfactual / Strategy tab  | 2 min |
+| Honest failure (F-04001-NJ)    | 1 min |
+| Confidence tiers               | 1 min |
+| The ask                        | 1 min |
+| Q&A                            | open  |
 
 **Total demo time: ~10 minutes before Q&A.**

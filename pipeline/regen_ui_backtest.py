@@ -55,6 +55,20 @@ po            = pd.read_parquet(ART / 'po.parquet')
 sales         = pd.read_parquet(ART / 'sales.parquet')
 alerts_today  = pd.read_parquet(ART / 'reorder_alerts.parquet')
 
+_lane_status_path = ART / 'lane_status.parquet'
+if _lane_status_path.exists():
+    lane_status = pd.read_parquet(_lane_status_path)
+    status_by_lane = {
+        (r['ITEMNMBR'], r['DC']): {
+            'status':             str(r['status']),
+            'snapshot_on_hand':   float(r['snapshot_on_hand']) if pd.notna(r['snapshot_on_hand']) else None,
+            'hist_run_rate_wk':   float(r['hist_run_rate_wk']) if pd.notna(r['hist_run_rate_wk']) else None,
+        }
+        for _, r in lane_status.iterrows()
+    }
+else:
+    status_by_lane = {}
+
 sales['QTY_BASE']   = sales['QUANTITY_adj'].astype(float) * sales['QTYBSUOM'].fillna(1).astype(float)
 sales['DC']         = sales['LOCNCODE'].astype(str).map(DC_MAP)
 sales               = sales.dropna(subset=['DC'])
@@ -268,8 +282,14 @@ for (sku, dc), group in alerts_wf.groupby(['ITEMNMBR', 'DC']):
         today    = None
         metadata = {'sku_desc': '', 'case_pack': None, 'vendor': '', 'country': ''}
 
+    lane_st = status_by_lane.get((sku, dc), {})
+    status  = lane_st.get('status', 'active')
+
     payload = {
         'sku': sku, 'dc': dc,
+        'status': status,
+        'snapshot_on_hand': lane_st.get('snapshot_on_hand'),
+        'hist_run_rate_wk': lane_st.get('hist_run_rate_wk'),
         'series': series,
         'simulated_pos': simulated_pos,
         'today': today,
@@ -292,6 +312,7 @@ for (sku, dc), group in alerts_wf.groupby(['ITEMNMBR', 'DC']):
         'n_fresh':          n_fresh,
         'today_flag':       today['reorder_flag'] if today else False,
         'today_confidence': today['confidence']   if today else 'low',
+        'status':           status,
     })
 
 print(f'wrote {lanes_written} lane JSON files')
@@ -334,4 +355,24 @@ summary = {
 }
 (UI_DATA / 'backtest_summary.json').write_text(json.dumps(summary, default=str))
 print(f'wrote backtest_summary.json: {summary["strategies"][0]}')
+
+
+# ── Patch alerts_today.json with lane status ────────────────────────────
+# Adds `status` per row; suppresses reorder_flag for discontinued lanes so
+# they stop showing up as alerts. The lane stays visible in the UI with
+# its badge.
+alerts_path = UI_DATA / 'alerts_today.json'
+if alerts_path.exists() and status_by_lane:
+    rows = json.loads(alerts_path.read_text())
+    n_suppressed = 0
+    for row in rows:
+        key = (row.get('ITEMNMBR'), row.get('DC'))
+        st  = status_by_lane.get(key, {}).get('status', 'active')
+        row['status'] = st
+        if st == 'discontinued' and row.get('reorder_flag'):
+            row['reorder_flag'] = False
+            n_suppressed += 1
+    alerts_path.write_text(json.dumps(rows, default=str))
+    print(f'patched alerts_today.json: added status to {len(rows)} rows, suppressed {n_suppressed} discontinued alerts')
+
 print('done')
