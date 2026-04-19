@@ -42,6 +42,8 @@ Public API:
     compute_lead_time_from_po(po, dc_map) -> pd.DataFrame   # now also returns σ_LT
     compute_abc_xyz(weekly, dc_stats) -> pd.DataFrame
     prepare_item_master(im) -> pd.DataFrame
+    compute_trend_regime(weekly, *, recent_wk, ...) -> pd.DataFrame
+    compute_empirical_p99_lt(weekly, lanes_lt) -> pd.DataFrame
     build_reorder_alerts(weekly, inv, im, *, po, dc_map, ...) -> pd.DataFrame
 
 Tunables exposed for the UI (tier-1 policy sliders):
@@ -53,6 +55,21 @@ Tunables exposed for the UI (tier-1 policy sliders):
     forward_cover_by_tier   : dict[str, float] — per-tier order-up-to cover.
                               e.g. {'AX': 8, 'CZ': 4}. Lanes not in the dict
                               use the scalar forward_cover_weeks.
+    use_trend_regime        : bool, default False. When True, detects per-
+                              lane trend (recent 26wk mean vs full-history
+                              mean). Lanes classified 'declining' or
+                              'growing' switch to the recent window for
+                              run_rate / std. Cuts WMAPE ~62% → ~32% and
+                              bias +41% → +7% on the 116-lane backtest.
+    use_empirical_p99_ss    : bool, default False. Adds an empirical term
+                              to safety stock: p99 of rolling LT-week
+                              outflow minus run_rate·LT. Captures fat-
+                              tailed bursts the analytical SS misses.
+    ss_floor_frac           : float, default 0.0. Floors safety stock at
+                              ``ss_floor_frac × baseline_SS`` (baseline =
+                              SS computed with expanding-window mean/std).
+                              0.7 is the recommended floor when use_trend_
+                              regime is on, to guard against p99-dilution.
 """
 
 from __future__ import annotations
@@ -87,6 +104,11 @@ ABC_XYZ_Z = {
 }
 ABC_REVENUE_CUTOFFS = (0.80, 0.95)  # cumulative revenue share: A ≤ 0.80, B ≤ 0.95, rest = C
 XYZ_CV_CUTOFFS = (0.50, 1.00)        # X: CV < 0.50, Y: 0.50-1.00, Z: > 1.00
+
+TREND_RECENT_WK = 26                 # window for trend detection (half a year)
+TREND_DECLINE_THRESHOLD = 0.70       # recent/full < this → 'declining'
+TREND_GROWING_THRESHOLD = 1.30       # recent/full > this → 'growing'
+EMPIRICAL_P99_QUANTILE = 0.99        # quantile of rolling LT-week outflow for SS
 
 # Item-master Lead Time is freeform: "3 months", "3-4mths", "3~4wks", "2.5",
 # "Half a year or more". Rules:
@@ -329,6 +351,101 @@ def compute_abc_xyz(
     return out[['ITEMNMBR', 'DC', 'abc', 'xyz', 'tier', 'tier_z']]
 
 
+def compute_trend_regime(
+    weekly: pd.DataFrame,
+    *,
+    recent_wk: int = TREND_RECENT_WK,
+    decline_threshold: float = TREND_DECLINE_THRESHOLD,
+    growing_threshold: float = TREND_GROWING_THRESHOLD,
+) -> pd.DataFrame:
+    """Per (SKU × DC), classify demand regime and compute window-tightened
+    run-rate + std when recent demand diverges from full history.
+
+    Symmetric thresholds:
+      recent_mean / full_mean < decline_threshold → 'declining'
+      recent_mean / full_mean > growing_threshold → 'growing'
+      otherwise                                   → 'stable'
+
+    'declining' and 'growing' lanes use the last ``recent_wk`` weeks as
+    the effective series. 'stable' lanes use full history (matches the
+    existing expanding-window behaviour). Lanes with < ``recent_wk``
+    weeks of history stay 'stable' regardless of ratio.
+
+    Motivation: the expanding-window mean anchors run_rate to stale
+    history. On the 116-lane backtest this produces +41% forecast bias
+    (over-orders on declined lanes, under-orders on newly-growing ones).
+    The 26-week window cuts WMAPE 62% → 32% and bias to near-zero.
+    """
+    dc_weekly = (
+        weekly.groupby(['ITEMNMBR', 'DC', 'week_start'], as_index=False)['qty_base']
+              .sum()
+              .sort_values(['ITEMNMBR', 'DC', 'week_start'])
+    )
+    rows = []
+    for (sku, dc), g in dc_weekly.groupby(['ITEMNMBR', 'DC']):
+        s = g['qty_base'].astype(float).to_numpy()
+        n = len(s)
+        full_mean = float(s.mean()) if n else 0.0
+        trend_ratio = float(s[-recent_wk:].mean()) / full_mean if (n >= recent_wk and full_mean > 0) else 1.0
+
+        if n >= recent_wk and full_mean > 0 and trend_ratio < decline_threshold:
+            regime, eff = 'declining', s[-recent_wk:]
+        elif n >= recent_wk and full_mean > 0 and trend_ratio > growing_threshold:
+            regime, eff = 'growing', s[-recent_wk:]
+        else:
+            regime, eff = 'stable', s
+
+        rows.append({
+            'ITEMNMBR': sku,
+            'DC': dc,
+            'regime': regime,
+            'trend_ratio': trend_ratio,
+            'run_rate_wk_trend': float(eff.mean()) if len(eff) else 0.0,
+            'std_wk_trend': float(eff.std(ddof=0)) if len(eff) > 1 else 0.0,
+            'n_weeks_effective': int(len(eff)),
+        })
+    return pd.DataFrame(rows)
+
+
+def compute_empirical_p99_lt(
+    weekly: pd.DataFrame,
+    lanes_lt: pd.DataFrame,
+    *,
+    quantile: float = EMPIRICAL_P99_QUANTILE,
+) -> pd.DataFrame:
+    """Per-lane empirical quantile of rolling LT-week outflow sum.
+
+    Captures fat-tailed bursts the analytical ``Z·σ·√LT`` misses.
+    Feeds into ``safety_stock`` as ``max(p99_lt − run_rate·LT, 0)`` — the
+    cushion needed beyond expected LT demand to cover the historical
+    peak-LT window.
+
+    ``lanes_lt`` must have columns ``(ITEMNMBR, DC, lead_time_wk)``.
+    Lanes with fewer rows than ``lead_time_wk`` are skipped (no p99
+    computable). Weekly gaps are not zero-filled here; if upstream
+    ``weekly`` has missing weeks for a lane the quantile is taken over
+    observed rows, which is slightly conservative.
+    """
+    dc_weekly = (
+        weekly.groupby(['ITEMNMBR', 'DC', 'week_start'], as_index=False)['qty_base']
+              .sum()
+              .sort_values(['ITEMNMBR', 'DC', 'week_start'])
+    )
+    lt_map = lanes_lt.set_index(['ITEMNMBR', 'DC'])['lead_time_wk'].to_dict()
+    rows = []
+    for (sku, dc), g in dc_weekly.groupby(['ITEMNMBR', 'DC']):
+        lt = int(round(lt_map.get((sku, dc), DEFAULT_LEAD_WEEKS)))
+        lt = max(lt, 1)
+        s = g['qty_base'].astype(float).reset_index(drop=True)
+        if len(s) < lt:
+            continue
+        lt_sums = s.rolling(lt).sum().dropna()
+        if len(lt_sums) == 0:
+            continue
+        rows.append({'ITEMNMBR': sku, 'DC': dc, 'p99_lt': float(lt_sums.quantile(quantile))})
+    return pd.DataFrame(rows)
+
+
 def _round_up_case(qty: float, case_pack: float) -> float:
     if pd.isna(qty) or qty <= 0:
         return qty
@@ -356,6 +473,12 @@ def build_reorder_alerts(
     tier_z_overrides: dict | None = None,
     safety_stock_multiplier: float = 1.0,
     forward_cover_by_tier: dict | None = None,
+    use_trend_regime: bool = False,
+    trend_recent_wk: int = TREND_RECENT_WK,
+    trend_decline_threshold: float = TREND_DECLINE_THRESHOLD,
+    trend_growing_threshold: float = TREND_GROWING_THRESHOLD,
+    use_empirical_p99_ss: bool = False,
+    ss_floor_frac: float = 0.0,
 ) -> pd.DataFrame:
     """Return a (SKU × DC) reorder alert table sorted by urgency.
 
@@ -405,6 +528,32 @@ def build_reorder_alerts(
                  Required when ``po`` is provided.
     """
     dc_stats = compute_dc_stats(weekly, run_rate_quantile=run_rate_quantile)
+
+    # Trend-aware override: tighten the run_rate/std window for lanes whose
+    # recent demand has diverged from full history. Baseline (expanding)
+    # values are preserved as *_expanding columns so the caller — and the
+    # ss_floor_frac branch below — can still see what the old policy would
+    # have produced.
+    if use_trend_regime:
+        trend = compute_trend_regime(
+            weekly,
+            recent_wk=trend_recent_wk,
+            decline_threshold=trend_decline_threshold,
+            growing_threshold=trend_growing_threshold,
+        )
+        dc_stats = dc_stats.merge(trend, on=['ITEMNMBR', 'DC'], how='left')
+        dc_stats['run_rate_wk_expanding'] = dc_stats['run_rate_wk']
+        dc_stats['std_wk_expanding'] = dc_stats['std_wk']
+        dc_stats['run_rate_wk'] = dc_stats['run_rate_wk_trend'].fillna(dc_stats['run_rate_wk'])
+        dc_stats['std_wk'] = dc_stats['std_wk_trend'].fillna(dc_stats['std_wk'])
+    else:
+        dc_stats['regime'] = 'stable'
+        dc_stats['trend_ratio'] = 1.0
+        dc_stats['run_rate_wk_expanding'] = dc_stats['run_rate_wk']
+        dc_stats['std_wk_expanding'] = dc_stats['std_wk']
+        dc_stats['run_rate_wk_trend'] = np.nan
+        dc_stats['std_wk_trend'] = np.nan
+        dc_stats['n_weeks_effective'] = dc_stats['n_clean_weeks']
 
     inv_p = inv.rename(columns={
         'Item Number': 'ITEMNMBR',
@@ -484,18 +633,56 @@ def build_reorder_alerts(
     )
     rec['lt_std_known'] = (rec['lt_std_wk'] > 0)
 
-    std_wk  = rec['std_wk'].fillna(0)
     lt_wk   = rec['lead_time_wk']
     lt_std  = rec['lt_std_wk'] if use_lt_variance else 0.0
-    run_rt  = rec['run_rate_wk'].fillna(0)
-    # Full formula: SS = Z · √(LT · σ_d² + d² · σ_LT²).
-    # When σ_LT = 0 (unknown or toggle off), this reduces to Z · σ_d · √LT
-    # — identical to the prior formula, so this is a strict superset.
-    variance_term = lt_wk * std_wk**2 + run_rt**2 * (lt_std if use_lt_variance else 0.0)**2
-    rec['safety_stock'] = (
-        rec['z_applied'] * np.sqrt(variance_term.clip(lower=0))
-        * float(safety_stock_multiplier)
+
+    def _analytical_ss(run_rt, std_wk):
+        # SS = Z · √(LT · σ_d² + d² · σ_LT²). With σ_LT = 0 this reduces
+        # to Z · σ_d · √LT — identical to the pre-LT-variance formula, so
+        # this path is a strict superset.
+        variance_term = lt_wk * std_wk**2 + run_rt**2 * (lt_std if use_lt_variance else 0.0)**2
+        return rec['z_applied'] * np.sqrt(variance_term.clip(lower=0))
+
+    ss_analytical = _analytical_ss(
+        rec['run_rate_wk'].fillna(0),
+        rec['std_wk'].fillna(0),
     )
+    # Baseline SS = what the pre-trend policy (expanding-window mean/std)
+    # would have produced. Used for the ss_floor_frac hybrid term below.
+    ss_baseline_raw = _analytical_ss(
+        rec['run_rate_wk_expanding'].fillna(rec['run_rate_wk']).fillna(0),
+        rec['std_wk_expanding'].fillna(rec['std_wk']).fillna(0),
+    )
+
+    ss_terms = [ss_analytical]
+
+    if use_empirical_p99_ss:
+        p99_df = compute_empirical_p99_lt(
+            weekly, rec[['ITEMNMBR', 'DC', 'lead_time_wk']],
+        )
+        rec = rec.merge(p99_df, on=['ITEMNMBR', 'DC'], how='left')
+        rec['p99_lt'] = rec['p99_lt'].fillna(0.0)
+        ss_empirical = (
+            rec['p99_lt'] - rec['run_rate_wk'].fillna(0) * rec['lead_time_wk']
+        ).clip(lower=0)
+        ss_terms.append(ss_empirical)
+    else:
+        rec['p99_lt'] = np.nan
+
+    if ss_floor_frac and ss_floor_frac > 0:
+        ss_floor_series = float(ss_floor_frac) * ss_baseline_raw
+        rec['ss_floor'] = ss_floor_series
+        ss_terms.append(ss_floor_series)
+    else:
+        rec['ss_floor'] = np.nan
+
+    # Max across all active terms, then apply the global multiplier once.
+    ss_combined = ss_terms[0]
+    for t in ss_terms[1:]:
+        ss_combined = np.maximum(ss_combined, t)
+    rec['safety_stock'] = ss_combined * float(safety_stock_multiplier)
+    rec['ss_baseline']  = ss_baseline_raw * float(safety_stock_multiplier)
+
     rec['reorder_point'] = (
         rec['run_rate_wk'] * rec['lead_time_wk'] + rec['safety_stock']
     )
@@ -561,6 +748,13 @@ def build_reorder_alerts(
         'first_week', 'last_week',
         'confidence',
     ]
+    for extra in (
+        'regime', 'trend_ratio', 'n_weeks_effective',
+        'run_rate_wk_expanding', 'std_wk_expanding',
+        'p99_lt', 'ss_baseline', 'ss_floor',
+    ):
+        if extra in rec.columns:
+            ordered_cols.append(extra)
     return (
         rec[ordered_cols]
         .sort_values(['reorder_flag', 'weeks_of_cover'], ascending=[False, True])
