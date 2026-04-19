@@ -25,9 +25,33 @@ export function LaneHeader({ lane }: { lane: LaneFile }) {
           {conf}
         </span>
       </div>
-      <p className={`mt-2 text-sm ${t.reorder_flag ? 'text-alert' : 'text-muted'}`}>
-        {recommendation}
-      </p>
+      {t.reorder_flag ? (
+        <div className="mt-4 flex items-center justify-between rounded-lg bg-alert/10 border border-alert/20 p-4">
+          <div>
+            <div className="text-sm font-bold uppercase tracking-wider text-alert">Recommendation</div>
+            <div className="mt-1 text-3xl font-bold text-alert">
+              Order {fmtCases(t.suggested_cases)} <span className="text-xl font-medium opacity-80">({fmtInt(t.suggested_qty)} units)</span>
+            </div>
+          </div>
+          <div className="text-right text-base font-medium text-alert">
+            <div>Lead time: {fmtWeeks(t.lead_time_wk)}</div>
+            <div>Run rate: {fmtInt(t.run_rate_wk)}/wk</div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 flex items-center justify-between rounded-lg bg-ok/10 border border-ok/20 p-4">
+          <div>
+            <div className="text-sm font-bold uppercase tracking-wider text-ok">Recommendation</div>
+            <div className="mt-1 text-2xl font-bold text-ok">
+              No Action Required
+            </div>
+          </div>
+          <div className="text-right text-base font-medium text-ok">
+            <div>Current cover: {fmtWeeks(t.weeks_of_cover)}</div>
+            <div>Run rate: {fmtInt(t.run_rate_wk)}/wk</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

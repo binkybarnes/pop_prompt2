@@ -30,11 +30,22 @@
 
 **Why this lane:** 153 weeks of clean data, lead time from real PO receipts (not a default), two channels, and it had a real stockout in May 2023. This is your proof-of-concept lane.
 
-**What to point at on the Chart tab:**
+**What to point at on the Operational Prediction Chart:**
 
-- **On-hand line vs. reorder point band** — the reorder point isn't a flat line; it recalculates every 4 weeks as run-rate estimates update. Show that it moves.
-- **May 2023 dip** — on-hand went negative (-1,495 units). The alert fired the week before (May 1). Say: "The model saw this coming a week early. That's the lead-of-warning metric — median 12 weeks across all backtested lanes."
-- **Mean vs. p90 band** — mean is "typical week demand," p90 is "busy week." The band between them is the honest answer to "what if we have a demand spike?" POP operates in a world where one Costco order can 3× a week's run rate. The p90 line prices that in.
+- **The "Today" Line and Burn-Down Projection** — Show how the system takes actual physical inventory today and projects the downward burn rate into the future so you visually see when you will hit zero.
+- **May 2023 dip (in the Diagnostics tab)** — Show the historical backtest where on-hand went negative (-1,495 units). The alert fired the week before (May 1). Say: "The model saw this coming a week early. That's the lead-of-warning metric — median 12 weeks across all backtested lanes."
+
+**"Under the Hood" (The 3 Crucial Numbers):**
+If a stakeholder asks exactly how the model works, point to `src/reorder.py` and explain the 3 exact numbers that drive the prediction:
+
+1. **The Run Rate:** We use a dynamic **Trend-Aware Regime Detector**. We compute a `Ratio = (Recent 26-wk Mean) / (Full History Mean)`. 
+   - If `Ratio < 0.70` (declining) or `Ratio > 1.30` (growing), `Run Rate = Recent 26-wk Mean`.
+   - Otherwise, `Run Rate = Full History Mean`.
+   - *Why this matters:* It drops historical baggage instantly when trends shift, preventing over-ordering on dead stock or stockouts on new best-sellers.
+2. **The Safety Stock:** We use a rigorous dual-variance formula: `SS = Z × √(LT·σ_d² + d²·σ_LT²)`. 
+   - It captures BOTH demand volatility (`σ_d`) and lead-time volatility (`σ_LT`). Single-source formulas fail when Chinese POs vary between 3 to 9 weeks in transit.
+   - The `Z` score is tiered by ABC/XYZ classes. Best-sellers (AX) get `Z=1.96` (97.5% service level) to protect revenue, while slow unreliables (CZ) get squeezed down to `Z=1.04` to eliminate wasted working capital.
+3. **The Reorder Point:** The final trigger is simply: `(Run Rate × Lead Time in weeks) + Safety Stock`. Once your active `on_hand` drops below this threshold, the red alert fires.
 
 **Trust signal to name explicitly:**
 

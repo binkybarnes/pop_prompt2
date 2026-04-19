@@ -117,38 +117,38 @@ export function AlertTable({
             const slug = slugOf(r.ITEMNMBR, r.DC);
             return (
               <tr key={slug} className="border-t border-border hover:bg-gray-50">
-                <td className="px-3 py-1.5 font-mono text-[13px]">
-                  <Link href={`/alerts/lane/${slug}`} className="block">{r.ITEMNMBR}</Link>
+                <td className="p-0 font-mono text-[13px] align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">{r.ITEMNMBR}</Link>
                 </td>
-                <td className="px-3 py-1.5 text-muted">
-                  <Link href={`/alerts/lane/${slug}`} className="block">
+                <td className="p-0 text-muted align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">
                     {r.inv_description ?? ''}
                   </Link>
                 </td>
-                <td className="px-3 py-1.5 font-mono text-[13px]">
-                  <Link href={`/alerts/lane/${slug}`} className="block">{r.DC}</Link>
+                <td className="p-0 font-mono text-[13px] align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">{r.DC}</Link>
                 </td>
-                <td className="px-3 py-1.5 text-right font-mono text-[13px]">
-                  <Link href={`/alerts/lane/${slug}`} className="block">{fmtInt(r.on_hand_now)}</Link>
+                <td className="p-0 text-right font-mono text-[13px] align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">{fmtInt(r.on_hand_now)}</Link>
                 </td>
-                <td className="px-3 py-1.5 text-right font-mono text-[13px]">
-                  <Link href={`/alerts/lane/${slug}`} className="block">{fmtWeeks(r.weeks_of_cover)}</Link>
+                <td className="p-0 text-right font-mono text-[13px] align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">{fmtWeeks(r.weeks_of_cover)}</Link>
                 </td>
-                <td className="px-3 py-1.5 text-right font-mono text-[13px]">
-                  <Link href={`/alerts/lane/${slug}`} className="block">{fmtCases(r.suggested_cases)}</Link>
+                <td className="p-0 text-right font-mono text-[13px] align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">{fmtCases(r.suggested_cases)}</Link>
                 </td>
-                <td className="px-3 py-1.5">
-                  <Link href={`/alerts/lane/${slug}`} className="block">
+                <td className="p-0 align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">
                     <ConfidenceBadge c={r.confidence} />
                   </Link>
                 </td>
-                <td className="px-3 py-1.5">
-                  <Link href={`/alerts/lane/${slug}`} className="block">
+                <td className="p-0 align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">
                     <Sparkline values={r.on_hand_sparkline} />
                   </Link>
                 </td>
-                <td className="px-3 py-1.5 text-center">
-                  <Link href={`/alerts/lane/${slug}`} className="block">
+                <td className="p-0 text-center align-middle">
+                  <Link href={`/alerts/lane/${slug}`} className="block px-3 py-1.5 w-full h-full">
                     {r.reorder_flag ? <span className="text-alert">●</span> : <span className="text-muted">○</span>}
                   </Link>
                 </td>
