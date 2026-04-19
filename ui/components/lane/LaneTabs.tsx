@@ -6,7 +6,7 @@ import { ChartTab } from './ChartTab';
 import { BacktestTab } from './BacktestTab';
 import { StrategyTab } from './StrategyTab';
 
-type TabKey = 'chart' | 'backtest' | 'strategy';
+type TabKey = 'historical chart' | 'backtest stats' | 'strategy comparison';
 
 export function LaneTabs({
   lane,
@@ -15,11 +15,11 @@ export function LaneTabs({
   lane: LaneFile;
   counterfactual: LaneCounterfactualFile;
 }) {
-  const [active, setActive] = useState<TabKey>('chart');
+  const [active, setActive] = useState<TabKey>('historical chart');
   return (
     <div className="space-y-3">
       <div className="flex gap-1 border-b border-border">
-        {(['chart', 'backtest', 'strategy'] as TabKey[]).map((k) => (
+        {(['historical chart', 'backtest stats', 'strategy comparison'] as TabKey[]).map((k) => (
           <button
             key={k}
             onClick={() => setActive(k)}
@@ -34,9 +34,9 @@ export function LaneTabs({
           </button>
         ))}
       </div>
-      {active === 'chart' && <ChartTab lane={lane} counterfactual={counterfactual} />}
-      {active === 'backtest' && <BacktestTab lane={lane} />}
-      {active === 'strategy' && <StrategyTab lane={lane} counterfactual={counterfactual} />}
+      {active === 'historical chart' && <ChartTab lane={lane} counterfactual={counterfactual} />}
+      {active === 'backtest stats' && <BacktestTab lane={lane} />}
+      {active === 'strategy comparison' && <StrategyTab lane={lane} counterfactual={counterfactual} />}
     </div>
   );
 }
